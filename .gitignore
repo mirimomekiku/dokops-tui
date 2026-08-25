@@ -1,0 +1,21 @@
+# Binaries
+bin/
+devops-tui
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test / Coverage
+*.out
+*.test
+
+# IDEs & OS
+.vscode/
+.idea/
+.DS_Store
+
+# Documentation build directory
+docs/
+./docs/
