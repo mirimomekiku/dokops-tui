@@ -53,6 +53,28 @@ var (
 				Background(ColorSurface).
 				Padding(0, 1)
 
+	ActiveWorkspaceStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#7aa2f7")).
+				Padding(0, 1)
+
+	InactiveWorkspaceStyle = lipgloss.NewStyle().
+				Foreground(ColorText).
+				Background(ColorSurfaceAlt).
+				Padding(0, 1)
+
+	ActiveSubTabStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorHighlight).
+				Background(ColorSurface).
+				Padding(0, 1)
+
+	InactiveSubTabStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted).
+				Background(ColorDark).
+				Padding(0, 1)
+
 	CardStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).

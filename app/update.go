@@ -243,51 +243,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// F1-F12 always jump directly to tab even if PTY is captured
 		switch msg.String() {
 		case "f1":
-			m.ActiveTab = TabMonitor
+			m.SetTab(TabMonitor)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f2":
-			m.ActiveTab = TabContainers
+			m.SetTab(TabContainers)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f3":
-			m.ActiveTab = TabServices
+			m.SetTab(TabServices)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f4":
-			m.ActiveTab = TabPorts
+			m.SetTab(TabPorts)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f5":
-			m.ActiveTab = TabNginx
+			m.SetTab(TabNginx)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f6":
-			m.ActiveTab = TabAutoNginx
+			m.SetTab(TabAutoNginx)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f7":
-			m.ActiveTab = TabDeploy
+			m.SetTab(TabDeploy)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f8":
-			m.ActiveTab = TabPHPFPM
+			m.SetTab(TabPHPFPM)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f9":
-			m.ActiveTab = TabWorkers
+			m.SetTab(TabWorkers)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f10":
-			m.ActiveTab = TabCertbot
+			m.SetTab(TabCertbot)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f11":
-			m.ActiveTab = TabGit
+			m.SetTab(TabGit)
 			m.TerminalView.SetFocus(false)
 			return m, nil
 		case "f12":
-			m.ActiveTab = TabTerminal
+			m.SetTab(TabTerminal)
 			return m, nil
 		}
 
@@ -313,120 +313,120 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.TerminalView.Close()
 				return m, tea.Quit
 			}
-		case "tab":
-			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
-				m.ActiveTab = Tab((int(m.ActiveTab) + 1) % len(TabNames))
-				return m, nil
-			}
-		case "shift+tab":
-			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
-				m.ActiveTab = Tab((int(m.ActiveTab) + len(TabNames) - 1) % len(TabNames))
-				return m, nil
-			}
+
+		// Workspace Navigation (1 through 5)
 		case "1":
 			if m.ActiveTab != TabKnife {
-				m.ActiveTab = TabMonitor
+				m.SetWorkspace(WorkspaceSystem)
 				return m, nil
 			}
 		case "2":
 			if m.ActiveTab != TabKnife {
-				m.ActiveTab = TabContainers
+				m.SetWorkspace(WorkspaceWebOps)
 				return m, nil
 			}
 		case "3":
 			if m.ActiveTab != TabKnife {
-				m.ActiveTab = TabServices
+				m.SetWorkspace(WorkspaceDeploy)
 				return m, nil
 			}
 		case "4":
 			if m.ActiveTab != TabKnife {
-				m.ActiveTab = TabPorts
+				m.SetWorkspace(WorkspaceNetDB)
 				return m, nil
 			}
-		case "5":
-			m.ActiveTab = TabNginx
-			return m, nil
-		case "6":
-			m.ActiveTab = TabAutoNginx
-			return m, nil
-		case "7":
-			m.ActiveTab = TabDeploy
-			return m, nil
-		case "8":
-			m.ActiveTab = TabPHPFPM
-			return m, nil
-		case "9":
-			m.ActiveTab = TabWorkers
-			return m, nil
-		case "0":
-			m.ActiveTab = TabCertbot
-			return m, nil
+
+		// Left / Right arrow navigation for workspaces
+		case "left", "[":
+			if m.ActiveTab != TabDisk && m.ActiveTab != TabScanner && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabCertbot {
+				m.PrevWorkspace()
+				return m, nil
+			}
+		case "right", "]":
+			if m.ActiveTab != TabDisk && m.ActiveTab != TabScanner && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabCertbot {
+				m.NextWorkspace()
+				return m, nil
+			}
+
+		// Sub-tab cycling within active workspace
+		case "tab":
+			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
+				m.NextSubTab()
+				return m, nil
+			}
+		case "shift+tab":
+			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
+				m.PrevSubTab()
+				return m, nil
+			}
+
+		// Direct module shortcut letters
 		case "K", "k":
 			if m.ActiveTab == TabKnife || (m.ActiveTab != TabMonitor && m.ActiveTab != TabPorts && m.ActiveTab != TabServices && m.ActiveTab != TabSSH && m.ActiveTab != TabDisk && m.ActiveTab != TabDeploy && m.ActiveTab != TabAutoNginx) {
-				m.ActiveTab = TabKnife
+				m.SetTab(TabKnife)
 				return m, nil
 			}
 		case "L", "l":
 			if m.ActiveTab != TabContainers && m.ActiveTab != TabServices && m.ActiveTab != TabPorts && m.ActiveTab != TabWorkers && m.ActiveTab != TabDisk && m.ActiveTab != TabScanner {
-				m.ActiveTab = TabSSL
+				m.SetTab(TabSSL)
 				return m, nil
 			}
 		case "B", "b":
 			if m.ActiveTab != TabDeploy && m.ActiveTab != TabKnife {
-				m.ActiveTab = TabDatabase
+				m.SetTab(TabDatabase)
 				return m, nil
 			}
 		case "W", "w":
-			m.ActiveTab = TabBandwidth
+			m.SetTab(TabBandwidth)
 			return m, nil
 		case "A", "a":
 			if m.ActiveTab != TabKnife && m.ActiveTab != TabCertbot {
-				m.ActiveTab = TabScanner
+				m.SetTab(TabScanner)
 				return m, nil
 			}
 		case "G", "g":
 			if m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabAutoNginx {
-				m.ActiveTab = TabGit
+				m.SetTab(TabGit)
 				return m, nil
 			}
 		case "C", "c":
 			if m.ActiveTab != TabMonitor && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabEnv && m.ActiveTab != TabPHPFPM {
-				m.ActiveTab = TabCI
+				m.SetTab(TabCI)
 				return m, nil
 			}
 		case "S", "s":
 			if m.ActiveTab != TabContainers && m.ActiveTab != TabServices && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabGit && m.ActiveTab != TabEnv && m.ActiveTab != TabAutoNginx {
-				m.ActiveTab = TabSSH
+				m.SetTab(TabSSH)
 				return m, nil
 			}
 		case "E", "e":
 			if m.ActiveTab != TabNginx && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabGit {
-				m.ActiveTab = TabEnv
+				m.SetTab(TabEnv)
 				return m, nil
 			}
 		case "O", "o":
 			if m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv {
-				m.ActiveTab = TabTimers
+				m.SetTab(TabTimers)
 				return m, nil
 			}
 		case "D", "d":
 			if m.ActiveTab != TabContainers && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabGit && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabDeploy && m.ActiveTab != TabCertbot {
-				m.ActiveTab = TabDisk
+				m.SetTab(TabDisk)
 				return m, nil
 			}
 		case "H", "h":
 			if m.ActiveTab != TabPorts && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabScanner {
-				m.ActiveTab = TabHTTP
+				m.SetTab(TabHTTP)
 				return m, nil
 			}
 		case "N", "n":
 			if m.ActiveTab != TabMonitor && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv {
-				m.ActiveTab = TabDNS
+				m.SetTab(TabDNS)
 				return m, nil
 			}
 		case "T", "t":
 			if m.ActiveTab != TabNginx && m.ActiveTab != TabPorts && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot {
-				m.ActiveTab = TabTerminal
+				m.SetTab(TabTerminal)
 				return m, nil
 			}
 		case "i":

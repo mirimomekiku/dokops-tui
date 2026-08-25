@@ -18,49 +18,58 @@ go build -o bin/dok-ops .
 
 ---
 
-## Module Directory
+## Workspaces & Modules (24 Integrated Tools)
 
-| Key | Module                 | Purpose                                                         | Alternative To             |
-| :-: | ---------------------- | --------------------------------------------------------------- | -------------------------- |
-| `1` | **System Monitor**     | Per-core CPU, RAM/Swap, and sortable process killer             | `htop`                     |
-| `2` | **Docker Manager**     | Container state management and live log streaming               | `ctop` / `docker`          |
-| `3` | **Systemd Services**   | Unit lifecycle management and systemd journal logs              | `systemctl` / `journalctl` |
-| `4` | **Listening Ports**    | Active TCP/UDP socket mapper and conflict resolution            | `ss` / `lsof -i`           |
-| `5` | **Nginx Manager**      | Site symlink toggle, syntax tester, and config viewer           | `nginx -t`                 |
-| `6` | **Auto-Nginx**         | Framework detector (Laravel, Node, SPA, WP) & config generator  | Manual vhost creation      |
-| `7` | **Deploy Hub**         | Multi-repo Git tracking and zero-downtime release pipelines     | Custom deploy scripts      |
-| `8` | **PHP-FPM Switcher**   | Multi-PHP socket discovery, daemon restarts, and OPcache flush  | Manual FPM restarts        |
-| `9` | **Background Workers** | Supervisor/Horizon process manager and Artisan scheduler        | `supervisorctl`            |
-| `0` | **Certbot SSL**        | Let's Encrypt SSL provisioner with DNS validation & dry-run     | `certbot --nginx`          |
-| `K` | **DevOps Knife**       | Offline converters for JWT, Cron, Base64/Hex, and Hashes        | CyberChef                  |
-| `L` | **SSL/TLS Inspector**  | Certificate chain, SAN, cipher, and expiration analyzer         | `openssl s_client`         |
-| `B` | **Database Monitor**   | PostgreSQL/MySQL pool health, slow queries, and SQL runner      | `pg_stat_activity`         |
-| `W` | **Live Bandwidth**     | Interface transfer rate monitor (KB/s, MB/s)                    | `iftop` / `bandwhich`      |
-| `A` | **TCP Port Scanner**   | Concurrent port scanner with banner grabbing and latency        | `nmap` / `nc -zv`          |
-| `G` | **Git Inspector**      | Branch status, staged/unstaged diff viewer, and stash/pop       | `lazygit`                  |
-| `C` | **CI Status**          | GitHub Actions workflow run monitor                             | `gh run list`              |
-| `S` | **SSH Auditor**        | Active login sessions, session termination, and authorized keys | `who` / `authorized_keys`  |
-| `E` | **.Env Validator**     | Configuration drift detector against `.env.example`             | Custom validators          |
-| `O` | **Timers & Cron**      | Unified timeline of user crons, system crons, and timers        | `crontab` / `list-timers`  |
-| `D` | **Disk Analyzer**      | Hierarchical filesystem space usage and directory navigation    | `ncdu`                     |
-| `H` | **HTTP Tracer**        | Request latency waterfall (DNS, TCP, TLS, TTFB, Transfer)       | `curl`                     |
-| `N` | **DNS Inspector**      | Multi-nameserver query resolver with record type toggles        | `dig`                      |
-| `T` | **Embedded Terminal**  | Full POSIX pseudo-terminal subshell                             | `$SHELL`                   |
+`dok-ops` consolidates 24 modules across **5 primary workspaces**:
+
+### 1. 🖥️ Workspace 1: System
+* **Monitor**: Per-core CPU, RAM/Swap, and sortable process killer (`htop`)
+* **Bandwidth**: Real-time interface transfer rate monitor (`iftop`)
+* **Disk**: Interactive filesystem space analyzer (`ncdu`)
+* **Timers**: Unified timeline of crons & systemd timers (`crontab` / `systemctl list-timers`)
+* **Services**: Systemd unit lifecycle and journal logs (`systemctl` / `journalctl`)
+* **Ports**: Active TCP/UDP listening sockets & conflict killer (`ss` / `lsof -i`)
+
+### 2. 🌐 Workspace 2: WebOps
+* **Nginx**: VHost symlink toggle, syntax tester (`nginx -t`), and config viewer
+* **Auto-Nginx**: Framework detector (Laravel, Node, SPA, WP) & config generator
+* **PHP-FPM**: Multi-PHP socket discovery, daemon restarts & OPcache flush
+* **Certbot**: Let's Encrypt SSL provisioner with DNS validation & dry-run
+* **SSL/TLS**: Certificate chain, SAN, cipher & expiration analyzer (`openssl s_client`)
+* **Workers**: Supervisor/Horizon process manager & Artisan scheduler
+
+### 3. 🚀 Workspace 3: Deploy
+* **Deploy Hub**: Multi-repo Git tracking & zero-downtime release pipelines
+* **Git**: Branch status, staged/unstaged diff viewer, and stash/pop (`lazygit`)
+* **CI Actions**: GitHub Actions workflow run monitor (`gh run list`)
+* **.Env**: Configuration drift detector against `.env.example`
+
+### 4. 🗄️ Workspace 4: Net & DB
+* **Database**: PostgreSQL/MySQL pool health, slow queries & SQL runner
+* **Containers**: Docker container state management and live log streaming (`ctop`)
+* **HTTP Tracer**: Request latency waterfall profiler (`curl`)
+* **DNS**: Multi-nameserver query resolver with record type toggles (`dig`)
+* **Scanner**: Concurrent TCP port scanner with banner grabbing (`nmap`)
+
+### 5. 🛠️ Workspace 5: Tools & PTY
+* **Knife**: DevOps offline converters (JWT, Cron, Base64/Hex, Hashes)
+* **SSH**: Active SSH sessions auditor, session termination & authorized keys
+* **Terminal**: Embedded POSIX pseudo-terminal (PTY) subshell (`$SHELL`)
 
 ---
 
 ## Global Keybindings
 
-| Key                                                                  | Action                                           |
-| -------------------------------------------------------------------- | ------------------------------------------------ |
-| `1` - `0`                                                            | Jump to numbered tabs (1: Monitor to 0: Certbot) |
-| `K`, `L`, `B`, `W`, `A`, `G`, `C`, `S`, `E`, `O`, `D`, `H`, `N`, `T` | Jump to corresponding alpha module               |
-| `Tab` / `Shift+Tab`                                                  | Cycle tabs forward / backward                    |
-| `F1` - `F12`                                                         | Function key tab shortcuts                       |
-| `j` / `k` (or Arrow keys)                                            | Navigate rows in tables and viewports            |
-| `Enter`                                                              | Submit input / execute operational action        |
-| `i` / `Ctrl+]`                                                       | Focus / unfocus embedded PTY subshell            |
-| `q` / `Ctrl+C`                                                       | Quit                                             |
+| Key | Action |
+| --- | --- |
+| `1` - `5` | Switch directly to Workspace 1 - 5 |
+| `Left` / `Right` (or `[` / `]`) | Cycle previous / next workspace |
+| `Tab` / `Shift+Tab` | Cycle sub-tabs within active workspace |
+| `F1` - `F12` | Direct function-key jump to specific tools |
+| `j` / `k` (or Arrow keys) | Navigate rows in tables and viewports |
+| `Enter` | Submit input / execute operational action |
+| `i` / `Ctrl+]` | Focus / unfocus embedded PTY subshell |
+| `q` / `Ctrl+C` | Quit |
 
 ---
 

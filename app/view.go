@@ -87,18 +87,19 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	logo := theme.TitleStyle.Render("⚡ dok-ops v1.0")
+	logo := theme.TitleStyle.Render("⚡ dok-ops")
 
-	// Tabs
-	var tabs []string
-	for i, name := range TabNames {
-		if Tab(i) == m.ActiveTab {
-			tabs = append(tabs, theme.ActiveTabStyle.Render(name))
+	// Row 1: Workspace Pills
+	var wsTabs []string
+	for _, ws := range Workspaces {
+		wsLabel := fmt.Sprintf("%s %s", ws.Icon, ws.Name)
+		if ws.ID == m.ActiveWorkspace {
+			wsTabs = append(wsTabs, theme.ActiveWorkspaceStyle.Render(wsLabel))
 		} else {
-			tabs = append(tabs, theme.InactiveTabStyle.Render(name))
+			wsTabs = append(wsTabs, theme.InactiveWorkspaceStyle.Render(wsLabel))
 		}
 	}
-	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	wsBar := lipgloss.JoinHorizontal(lipgloss.Top, wsTabs...)
 
 	// Quick Stats (Uptime, Load, Host)
 	loadStr := fmt.Sprintf("Load: %.2f %.2f %.2f", m.QuickStats.Load1, m.QuickStats.Load5, m.QuickStats.Load15)
@@ -109,32 +110,59 @@ func (m Model) renderHeader() string {
 		Foreground(theme.ColorMuted).
 		Render(fmt.Sprintf("%s | %s | %s", hostStr, uptimeStr, loadStr))
 
-	leftSection := lipgloss.JoinHorizontal(lipgloss.Center, logo, " ", tabBar)
+	leftSection := lipgloss.JoinHorizontal(lipgloss.Center, logo, " ", wsBar)
 	gapWidth := m.Width - lipgloss.Width(leftSection) - lipgloss.Width(quickStats) - 2
 	if gapWidth < 1 {
 		gapWidth = 1
 	}
 
-	headerBar := lipgloss.JoinHorizontal(lipgloss.Center,
+	row1 := lipgloss.JoinHorizontal(lipgloss.Center,
 		leftSection,
 		strings.Repeat(" ", gapWidth),
 		quickStats,
 	)
 
-	return lipgloss.NewStyle().
+	row1Rendered := lipgloss.NewStyle().
 		Background(theme.ColorSurface).
 		Width(m.Width).
 		Padding(0, 1).
-		Render(headerBar)
+		Render(row1)
+
+	// Row 2: Sub-tabs for current active workspace
+	activeWS := Workspaces[m.ActiveWorkspace]
+	var subTabs []string
+	subTabs = append(subTabs, lipgloss.NewStyle().Foreground(theme.ColorSecondary).Bold(true).Render(activeWS.Icon+" "+activeWS.Name+" ▸ "))
+	for _, t := range activeWS.Tabs {
+		tabName := TabDisplayNames[t]
+		if t == m.ActiveTab {
+			subTabs = append(subTabs, theme.ActiveSubTabStyle.Render("● "+tabName))
+		} else {
+			subTabs = append(subTabs, theme.InactiveSubTabStyle.Render("  "+tabName+"  "))
+		}
+	}
+	subTabBar := lipgloss.JoinHorizontal(lipgloss.Center, subTabs...)
+
+	row2Rendered := lipgloss.NewStyle().
+		Background(theme.ColorDark).
+		Width(m.Width).
+		Padding(0, 1).
+		Render(subTabBar)
+
+	return lipgloss.JoinVertical(lipgloss.Left, row1Rendered, row2Rendered)
 }
 
 func (m Model) renderFooter() string {
 	var hints []string
 
+	// Standard prefix for global navigation
+	navHint := theme.KeyStyle.Render("1-4/←→") + ": " + theme.DescStyle.Render("Workspace")
+	tabHint := theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("SubTab")
+
 	switch m.ActiveTab {
 	case TabMonitor:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Navigate"),
 			theme.KeyStyle.Render("c/m/p/n") + ": " + theme.DescStyle.Render("Sort (CPU/Mem/PID/Name)"),
 			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill Proc"),
@@ -143,7 +171,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabContainers:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select"),
 			theme.KeyStyle.Render("u/Enter") + ": " + theme.DescStyle.Render("Start"),
 			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Stop"),
@@ -154,7 +183,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabServices:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Unit"),
 			theme.KeyStyle.Render("u/Enter") + ": " + theme.DescStyle.Render("Start"),
 			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Stop"),
@@ -165,7 +195,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabPorts:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Port"),
 			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill Proc (Free Port)"),
 			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("Toggle Listen/All"),
@@ -174,7 +205,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabNginx:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Site"),
 			theme.KeyStyle.Render("e/Space") + ": " + theme.DescStyle.Render("Toggle Enable/Disable"),
 			theme.KeyStyle.Render("t") + ": " + theme.DescStyle.Render("Syntax Test (nginx -t)"),
@@ -184,7 +216,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabAutoNginx:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Detected Project"),
 			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Cycle FastCGI PHP Socket"),
 			theme.KeyStyle.Render("g/Enter") + ": " + theme.DescStyle.Render("Generate & Deploy Nginx Config"),
@@ -192,7 +225,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabDeploy:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Repository"),
 			theme.KeyStyle.Render("p") + ": " + theme.DescStyle.Render("Fast-forward Pull (git pull --ff-only)"),
 			theme.KeyStyle.Render("d/Enter") + ": " + theme.DescStyle.Render("Dispatch Zero-Downtime Pipeline"),
@@ -200,7 +234,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabPHPFPM:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select PHP Version"),
 			theme.KeyStyle.Render("r/Enter") + ": " + theme.DescStyle.Render("Restart PHP Daemon"),
 			theme.KeyStyle.Render("c") + ": " + theme.DescStyle.Render("Flush OPcache & APCu"),
@@ -208,7 +243,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabWorkers:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Workers/Schedule"),
 			theme.KeyStyle.Render("r/Enter") + ": " + theme.DescStyle.Render("Restart Worker Process"),
 			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("View Worker Log Tail"),
@@ -216,7 +252,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabCertbot:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Domain/Email"),
 			theme.KeyStyle.Render("t") + ": " + theme.DescStyle.Render("Dry-run Challenge Test"),
 			theme.KeyStyle.Render("p/Enter") + ": " + theme.DescStyle.Render("Provision Let's Encrypt SSL"),
@@ -224,38 +261,44 @@ func (m Model) renderFooter() string {
 		}
 	case TabKnife:
 		hints = []string{
+			navHint,
 			theme.KeyStyle.Render("1-4") + ": " + theme.DescStyle.Render("Switch Tool (JWT / Cron / Base64 / Hash)"),
 			theme.KeyStyle.Render("Type in input") + ": " + theme.DescStyle.Render("Instant offline conversion"),
 		}
 	case TabSSL:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Inspect Cert"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Details"),
 		}
 	case TabDatabase:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Conn/Query"),
 			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Connect / Run Query"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Result Table"),
 		}
 	case TabBandwidth:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Sample Bandwidth"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Interface"),
 		}
 	case TabScanner:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Select Port Preset"),
 			theme.KeyStyle.Render("Enter/r") + ": " + theme.DescStyle.Render("Run Concurrent Scan"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Open Ports"),
 		}
 	case TabGit:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Files/Commits"),
 			theme.KeyStyle.Render("d/Enter") + ": " + theme.DescStyle.Render("View Diff"),
 			theme.KeyStyle.Render("s/u") + ": " + theme.DescStyle.Render("Stage/Unstage"),
@@ -263,34 +306,39 @@ func (m Model) renderFooter() string {
 		}
 	case TabCI:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("v/Enter") + ": " + theme.DescStyle.Render("View Run Details"),
 			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh GitHub Actions"),
 		}
 	case TabSSH:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Sessions/Keys"),
 			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill SSH Session"),
 			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh Auditor"),
 		}
 	case TabEnv:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Env/Example"),
 			theme.KeyStyle.Render("Enter/r") + ": " + theme.DescStyle.Render("Compare & Validate Drift"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Keys"),
 		}
 	case TabTimers:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("f") + ": " + theme.DescStyle.Render("Filter (Crons / Systemd Timers)"),
 			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh Schedules"),
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Timeline"),
 		}
 	case TabDisk:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Navigate"),
 			theme.KeyStyle.Render("Enter / l") + ": " + theme.DescStyle.Render("Open Dir"),
 			theme.KeyStyle.Render("Backspace / h") + ": " + theme.DescStyle.Render("Parent Dir"),
@@ -300,7 +348,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabHTTP:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Cycle Inputs"),
 			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Change Method"),
 			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Execute Request"),
@@ -308,7 +357,8 @@ func (m Model) renderFooter() string {
 		}
 	case TabDNS:
 		hints = []string{
-			theme.KeyStyle.Render("Tab/1-0") + ": " + theme.DescStyle.Render("Tabs"),
+			navHint,
+			tabHint,
 			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Cycle Focus"),
 			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Change Type/Server"),
 			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Resolve DNS"),
@@ -316,7 +366,7 @@ func (m Model) renderFooter() string {
 		}
 	case TabTerminal:
 		hints = []string{
-			theme.KeyStyle.Render("F1-F12") + ": " + theme.DescStyle.Render("Jump Tabs"),
+			navHint,
 			theme.KeyStyle.Render("i") + ": " + theme.DescStyle.Render("Focus Shell"),
 			theme.KeyStyle.Render("Ctrl+]") + ": " + theme.DescStyle.Render("Unfocus Shell"),
 			theme.KeyStyle.Render("Ctrl+C") + ": " + theme.DescStyle.Render("Send SIGINT to Shell"),

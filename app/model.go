@@ -63,31 +63,75 @@ const (
 	TabTerminal
 )
 
-var TabNames = []string{
-	"1: Monitor",
-	"2: Docker",
-	"3: Services",
-	"4: Ports",
-	"5: Nginx",
-	"6: AutoNginx",
-	"7: Deploy",
-	"8: PHP-FPM",
-	"9: Workers",
-	"0: Certbot",
-	"K: Knife",
-	"L: SSL",
-	"B: DB",
-	"W: Traffic",
-	"A: Scanner",
-	"G: Git",
-	"C: CI",
-	"S: SSH",
-	"E: Env",
-	"O: Timers",
-	"D: Disk",
-	"H: HTTP",
-	"N: DNS",
-	"T: Shell",
+type Workspace int
+
+const (
+	WorkspaceSystem Workspace = iota
+	WorkspaceWebOps
+	WorkspaceDeploy
+	WorkspaceNetDB
+	WorkspaceTools
+)
+
+type WorkspaceInfo struct {
+	ID   Workspace
+	Name string
+	Icon string
+	Tabs []Tab
+}
+
+var Workspaces = []WorkspaceInfo{
+	{
+		ID:   WorkspaceSystem,
+		Name: "1: System",
+		Icon: "🖥️",
+		Tabs: []Tab{TabMonitor, TabBandwidth, TabDisk, TabTimers, TabServices, TabPorts},
+	},
+	{
+		ID:   WorkspaceWebOps,
+		Name: "2: WebOps",
+		Icon: "🌐",
+		Tabs: []Tab{TabNginx, TabAutoNginx, TabPHPFPM, TabCertbot, TabSSL, TabWorkers},
+	},
+	{
+		ID:   WorkspaceDeploy,
+		Name: "3: Deploy",
+		Icon: "🚀",
+		Tabs: []Tab{TabDeploy, TabGit, TabCI, TabEnv},
+	},
+	{
+		ID:   WorkspaceNetDB,
+		Name: "4: Net & DB",
+		Icon: "🗄️",
+		Tabs: []Tab{TabDatabase, TabContainers, TabHTTP, TabDNS, TabScanner},
+	},
+}
+
+var TabDisplayNames = map[Tab]string{
+	TabMonitor:    "Monitor",
+	TabBandwidth:  "Bandwidth",
+	TabDisk:       "Disk",
+	TabTimers:     "Timers",
+	TabServices:   "Services",
+	TabPorts:      "Ports",
+	TabNginx:      "Nginx",
+	TabAutoNginx:  "AutoNginx",
+	TabPHPFPM:     "PHP-FPM",
+	TabCertbot:    "Certbot",
+	TabSSL:        "SSL/TLS",
+	TabWorkers:    "Workers",
+	TabDeploy:     "Deploy Hub",
+	TabGit:        "Git",
+	TabCI:         "CI Status",
+	TabEnv:        ".Env",
+	TabDatabase:   "Database",
+	TabContainers: "Containers",
+	TabHTTP:       "HTTP Tracer",
+	TabDNS:        "DNS",
+	TabScanner:    "Scanner",
+	TabKnife:      "Knife",
+	TabSSH:        "SSH",
+	TabTerminal:   "Terminal",
 }
 
 type QuickStatsMsg struct {
@@ -102,12 +146,14 @@ type QuickStatsMsg struct {
 type QuickStatsTickMsg time.Time
 
 type Model struct {
-	ActiveTab   Tab
-	Width       int
-	Height      int
-	Program     *tea.Program
-	ptyStarted  bool
-	QuickStats  QuickStatsMsg
+	ActiveWorkspace Workspace
+	ActiveTab       Tab
+	LastActiveTab   map[Workspace]Tab
+	Width           int
+	Height          int
+	Program         *tea.Program
+	ptyStarted      bool
+	QuickStats      QuickStatsMsg
 
 	// Sub-views
 	MonitorView    monitor.Model
@@ -137,32 +183,121 @@ type Model struct {
 }
 
 func NewModel() Model {
+	lastTabs := make(map[Workspace]Tab)
+	for _, ws := range Workspaces {
+		if len(ws.Tabs) > 0 {
+			lastTabs[ws.ID] = ws.Tabs[0]
+		}
+	}
+
 	return Model{
-		ActiveTab:      TabMonitor,
-		MonitorView:    monitor.New(),
-		ContainersView: containers.New(),
-		ServicesView:   services.New(),
-		PortsView:      ports.New(),
-		NginxView:      nginx.New(),
-		AutoNginxView:  autonginx.New(),
-		DeployView:     deploy.New(),
-		PHPFPMView:     phpfpm.New(),
-		WorkersView:    workers.New(),
-		CertbotView:    certbot.New(),
-		KnifeView:      knife.New(),
-		SSLView:        ssl.New(),
-		DatabaseView:   database.New(),
-		BandwidthView:  bandwidth.New(),
-		ScannerView:    scanner.New(),
-		GitView:        git.New(),
-		CIView:         ci.New(),
-		SSHView:        ssh.New(),
-		EnvView:        env.New(),
-		TimersView:     timers.New(),
-		DiskView:       disk.New(""),
-		HTTPView:       httpclient.New(),
-		DNSView:        dns.New(),
-		TerminalView:   terminal.New(),
+		ActiveWorkspace: WorkspaceSystem,
+		ActiveTab:       TabMonitor,
+		LastActiveTab:   lastTabs,
+		MonitorView:     monitor.New(),
+		ContainersView:  containers.New(),
+		ServicesView:    services.New(),
+		PortsView:       ports.New(),
+		NginxView:       nginx.New(),
+		AutoNginxView:   autonginx.New(),
+		DeployView:      deploy.New(),
+		PHPFPMView:      phpfpm.New(),
+		WorkersView:     workers.New(),
+		CertbotView:     certbot.New(),
+		KnifeView:       knife.New(),
+		SSLView:         ssl.New(),
+		DatabaseView:    database.New(),
+		BandwidthView:   bandwidth.New(),
+		ScannerView:     scanner.New(),
+		GitView:         git.New(),
+		CIView:          ci.New(),
+		SSHView:         ssh.New(),
+		EnvView:         env.New(),
+		TimersView:      timers.New(),
+		DiskView:        disk.New(""),
+		HTTPView:        httpclient.New(),
+		DNSView:         dns.New(),
+		TerminalView:    terminal.New(),
+	}
+}
+
+// GetWorkspaceForTab finds which workspace owns a given tab
+func GetWorkspaceForTab(t Tab) Workspace {
+	for _, ws := range Workspaces {
+		for _, tab := range ws.Tabs {
+			if tab == t {
+				return ws.ID
+			}
+		}
+	}
+	return WorkspaceSystem
+}
+
+// SetWorkspace switches to a specific workspace and restores its active tab
+func (m *Model) SetWorkspace(ws Workspace) {
+	if int(ws) < 0 || int(ws) >= len(Workspaces) {
+		return
+	}
+	m.ActiveWorkspace = ws
+	if tab, ok := m.LastActiveTab[ws]; ok {
+		m.ActiveTab = tab
+	} else if len(Workspaces[ws].Tabs) > 0 {
+		m.ActiveTab = Workspaces[ws].Tabs[0]
+		m.LastActiveTab[ws] = m.ActiveTab
+	}
+}
+
+// NextWorkspace moves to the next workspace
+func (m *Model) NextWorkspace() {
+	next := (int(m.ActiveWorkspace) + 1) % len(Workspaces)
+	m.SetWorkspace(Workspace(next))
+}
+
+// PrevWorkspace moves to the previous workspace
+func (m *Model) PrevWorkspace() {
+	prev := (int(m.ActiveWorkspace) + len(Workspaces) - 1) % len(Workspaces)
+	m.SetWorkspace(Workspace(prev))
+}
+
+// SetTab sets the active tab directly and aligns the active workspace
+func (m *Model) SetTab(t Tab) {
+	m.ActiveTab = t
+	ws := GetWorkspaceForTab(t)
+	m.ActiveWorkspace = ws
+	m.LastActiveTab[ws] = t
+}
+
+// NextSubTab cycles to the next sub-tab within the current workspace
+func (m *Model) NextSubTab() {
+	tabs := Workspaces[m.ActiveWorkspace].Tabs
+	for i, t := range tabs {
+		if t == m.ActiveTab {
+			nextIdx := (i + 1) % len(tabs)
+			m.ActiveTab = tabs[nextIdx]
+			m.LastActiveTab[m.ActiveWorkspace] = m.ActiveTab
+			return
+		}
+	}
+	if len(tabs) > 0 {
+		m.ActiveTab = tabs[0]
+		m.LastActiveTab[m.ActiveWorkspace] = m.ActiveTab
+	}
+}
+
+// PrevSubTab cycles to the previous sub-tab within the current workspace
+func (m *Model) PrevSubTab() {
+	tabs := Workspaces[m.ActiveWorkspace].Tabs
+	for i, t := range tabs {
+		if t == m.ActiveTab {
+			prevIdx := (i + len(tabs) - 1) % len(tabs)
+			m.ActiveTab = tabs[prevIdx]
+			m.LastActiveTab[m.ActiveWorkspace] = m.ActiveTab
+			return
+		}
+	}
+	if len(tabs) > 0 {
+		m.ActiveTab = tabs[0]
+		m.LastActiveTab[m.ActiveWorkspace] = m.ActiveTab
 	}
 }
 
