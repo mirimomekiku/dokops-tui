@@ -53,8 +53,7 @@ type Model struct {
 
 func New() Model {
 	ji := textinput.New()
-	ji.Placeholder = "Paste JWT token (eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...)"
-	ji.SetValue("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFkbWluIFVzZXIiLCJyb2xlIjoiZGV2b3BzIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjE5MTYyMzkwMjJ9.4zC4m_k-c46j7M2L7hCg_W_x7Z-3U0_e8w-4_q")
+	ji.Placeholder = "Paste JWT token to decode (e.g. eyJ...)"
 	ji.Focus()
 	ji.CharLimit = 4000
 	ji.Width = 60
@@ -67,13 +66,13 @@ func New() Model {
 
 	bi := textinput.New()
 	bi.Placeholder = "Enter text to encode/decode..."
-	bi.SetValue("Hello DevOps Cockpit!")
+	bi.SetValue("")
 	bi.CharLimit = 2000
 	bi.Width = 50
 
 	hi := textinput.New()
 	hi.Placeholder = "Enter string to compute hashes..."
-	hi.SetValue("supersecretpassword")
+	hi.SetValue("")
 	hi.CharLimit = 2000
 	hi.Width = 50
 
