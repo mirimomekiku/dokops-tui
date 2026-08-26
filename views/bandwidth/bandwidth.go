@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	psnet "github.com/shirou/gopsutil/v3/net"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -37,6 +38,7 @@ type Model struct {
 	lastSampleTime time.Time
 	stats          []InterfaceStat
 	table          table.Model
+	actionMenu     actionmenu.Model
 	width          int
 	height         int
 	err            error
@@ -174,9 +176,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "sample":
+					cmds = append(cmds, m.SampleBandwidth())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
-		case "r":
-			cmds = append(cmds, m.SampleBandwidth())
+		case "space":
+			title := "Network Bandwidth"
+			subtitle := "Select network action"
+			items := []actionmenu.Item{
+				{Key: "sample", Title: "Sample Network Interfaces", Description: "Recalculate throughput metrics"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
 		}
 	}
 
@@ -216,7 +235,7 @@ func (m *Model) updateTableRows() {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 12
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -250,28 +269,26 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" IN: %s ", formatRate(totalRxRate))),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" OUT: %s ", formatRate(totalTxRate))),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Network Interfaces"),
 		"   ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(Tracking %d interfaces)", len(m.stats))),
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("in: %s", formatRate(totalRxRate))),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("out: %s", formatRate(totalTxRate))),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(%d interfaces)", len(m.stats))),
 	)
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("📶 LIVE BANDWIDTH & INTERFACE MONITOR (iftop)"),
-			"  ",
-			statsBadge,
-		),
+		headerLine,
 		"",
 		m.table.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
 		Render(body)
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

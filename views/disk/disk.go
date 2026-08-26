@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -52,6 +52,7 @@ type Model struct {
 	scannedNodes   int64
 	currentScan    string
 	spinner        spinner.Model
+	actionMenu     actionmenu.Model
 	width          int
 	height         int
 	sortBySize     bool
@@ -236,9 +237,67 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "open":
+					if m.currentNode != nil && m.cursor < len(m.currentNode.Children) {
+						selected := m.currentNode.Children[m.cursor]
+						if selected.IsDir && len(selected.Children) > 0 {
+							m.currentNode = selected
+							sortNodeChildren(m.currentNode, m.sortBySize)
+							m.cursor = 0
+							m.scrollOffset = 0
+						}
+					}
+				case "parent":
+					if m.currentNode != nil && m.currentNode.Parent != nil {
+						prevNode := m.currentNode
+						m.currentNode = m.currentNode.Parent
+						sortNodeChildren(m.currentNode, m.sortBySize)
+						m.cursor = 0
+						for i, child := range m.currentNode.Children {
+							if child == prevNode {
+								m.cursor = i
+								break
+							}
+						}
+						m.adjustScroll()
+					}
+				case "sort_size":
+					m.sortBySize = true
+					if m.currentNode != nil {
+						sortNodeChildren(m.currentNode, m.sortBySize)
+						m.cursor = 0
+						m.scrollOffset = 0
+					}
+				case "sort_name":
+					m.sortBySize = false
+					if m.currentNode != nil {
+						sortNodeChildren(m.currentNode, m.sortBySize)
+						m.cursor = 0
+						m.scrollOffset = 0
+					}
+				case "delete":
+					if m.currentNode != nil && m.cursor < len(m.currentNode.Children) {
+						m.deleteTarget = m.currentNode.Children[m.cursor]
+						m.confirmDelete = true
+					}
+				case "rescan":
+					m.isScanning = true
+					if m.currentNode != nil {
+						m.rootPath = m.currentNode.Path
+					}
+					cmds = append(cmds, m.spinner.Tick, m.startScan(m.rootPath))
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.confirmDelete {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				if m.deleteTarget != nil {
 					targetPath := m.deleteTarget.Path
 					cmds = append(cmds, func() tea.Msg {
@@ -247,15 +306,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					})
 				}
 				m.confirmDelete = false
-			case "n", "N", "esc":
+			case "n", "N", "esc", "space":
 				m.confirmDelete = false
-				m.statusMessage = "Deletion cancelled"
+				m.statusMessage = "Delete cancelled."
 			}
 			return m, tea.Batch(cmds...)
-		}
-
-		if m.isScanning {
-			return m, nil
 		}
 
 		numChildren := 0
@@ -274,15 +329,25 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.cursor--
 				m.adjustScroll()
 			}
-		case "g", "home":
-			m.cursor = 0
-			m.scrollOffset = 0
-		case "G", "end":
-			if numChildren > 0 {
-				m.cursor = numChildren - 1
-				m.adjustScroll()
+		case "space":
+			itemName := "Directory"
+			if m.currentNode != nil && m.cursor < len(m.currentNode.Children) {
+				itemName = m.currentNode.Children[m.cursor].Name
 			}
-		case "l", "enter", "right":
+			title := "Actions: " + itemName
+			subtitle := "Select storage operation"
+			items := []actionmenu.Item{
+				{Key: "open", Title: "Open Directory", Description: "Descend into selected folder"},
+				{Key: "parent", Title: "Parent Directory", Description: "Navigate to parent folder"},
+				{Key: "sort_size", Title: "Sort by Size (Descending)", Description: "Largest items first"},
+				{Key: "sort_name", Title: "Sort by Name (Ascending)", Description: "Alphabetical ordering"},
+				{Key: "delete", Title: "Delete File / Folder", Description: "Permanently remove selected item", Danger: true},
+				{Key: "rescan", Title: "Rescan Directory", Description: "Recalculate storage metrics"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if m.currentNode != nil && m.cursor < len(m.currentNode.Children) {
 				selected := m.currentNode.Children[m.cursor]
 				if selected.IsDir && len(selected.Children) > 0 {
@@ -292,49 +357,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					m.scrollOffset = 0
 				}
 			}
-		case "h", "backspace", "left":
-			if m.currentNode != nil && m.currentNode.Parent != nil {
-				prevNode := m.currentNode
-				m.currentNode = m.currentNode.Parent
-				sortNodeChildren(m.currentNode, m.sortBySize)
-				// Find index of previously active child
-				m.cursor = 0
-				for i, child := range m.currentNode.Children {
-					if child == prevNode {
-						m.cursor = i
-						break
-					}
-				}
-				m.adjustScroll()
-			}
-		case "s":
-			m.sortBySize = !m.sortBySize
-			if m.currentNode != nil {
-				sortNodeChildren(m.currentNode, m.sortBySize)
-				m.cursor = 0
-				m.scrollOffset = 0
-			}
-		case "r":
-			m.isScanning = true
-			if m.currentNode != nil {
-				m.rootPath = m.currentNode.Path
-			}
-			cmds = append(cmds, m.spinner.Tick, m.startScan(m.rootPath))
-		case "d":
-			if m.currentNode != nil && m.cursor < len(m.currentNode.Children) {
-				m.deleteTarget = m.currentNode.Children[m.cursor]
-				m.confirmDelete = true
-			}
 		}
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m *Model) adjustScroll() {
-	visibleRows := m.height - 10
-	if visibleRows < 5 {
-		visibleRows = 5
+	visibleRows := m.height - 6
+	if visibleRows < 4 {
+		visibleRows = 4
 	}
 	if m.cursor < m.scrollOffset {
 		m.scrollOffset = m.cursor
@@ -351,14 +383,12 @@ func (m Model) View() string {
 
 	if m.isScanning {
 		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorBorder).
 			Padding(2, 3).
 			Width(contentWidth).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Left,
-					theme.CardTitleStyle.Render("📁 DISK SPACE ANALYZER (ncdu)"),
+					lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Disk Space Analyzer (ncdu)"),
 					"",
 					fmt.Sprintf("%s Scanning filesystem tree...", m.spinner.View()),
 					lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("Target Path: %s", m.rootPath)),
@@ -372,22 +402,14 @@ func (m Model) View() string {
 		return "No disk data available."
 	}
 
-	// Path & Summary Header
-	totalDirSize := m.currentNode.Size
 	pathBar := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeInfo.Render(" PATH "),
-		" ",
-		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render(m.currentNode.Path),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Disk Space"),
+		"   ",
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(m.currentNode.Path),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(theme.FormatIntBytes(m.currentNode.Size)),
 		"  ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("Total: %s (%d items)", theme.FormatIntBytes(totalDirSize), len(m.currentNode.Children))),
-	)
-
-	sortHint := "Size ▼"
-	if !m.sortBySize {
-		sortHint = "Name / Type"
-	}
-	helpBar := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(
-		fmt.Sprintf("[j/k: Move]  [Enter/l: Open]  [Backspace/h: Up]  [s: Sort (%s)]  [r: Rescan]  [d: Delete]", sortHint),
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(%d items)", len(m.currentNode.Children))),
 	)
 
 	statusLine := ""
@@ -397,15 +419,15 @@ func (m Model) View() string {
 			Background(theme.ColorDanger).
 			Bold(true).
 			Padding(0, 1).
-			Render(fmt.Sprintf("⚠️ Permanently delete '%s'? (y/N)", m.deleteTarget.Name))
+			Render(fmt.Sprintf("[!] Permanently delete '%s'? (y/N)", m.deleteTarget.Name))
 	} else if m.statusMessage != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.statusMessage)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.statusMessage)
 	}
 
 	// Render Directory Items Table
-	visibleRows := m.height - 10
-	if visibleRows < 5 {
-		visibleRows = 5
+	visibleRows := m.height - 6
+	if visibleRows < 4 {
+		visibleRows = 4
 	}
 
 	start := m.scrollOffset
@@ -414,77 +436,73 @@ func (m Model) View() string {
 		end = len(m.currentNode.Children)
 	}
 
-	barWidth := contentWidth - 52
-	if barWidth < 10 {
-		barWidth = 10
-	}
+	barWidth := 20
 
 	var rows []string
-	tableHeader := lipgloss.JoinHorizontal(lipgloss.Left,
-		lipgloss.NewStyle().Width(12).Bold(true).Foreground(theme.ColorPrimary).Render("SIZE"),
-		" ",
-		lipgloss.NewStyle().Width(barWidth+10).Bold(true).Foreground(theme.ColorPrimary).Render("CAPACITY USAGE"),
-		" ",
-		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("NAME / ITEM"),
-	)
-	rows = append(rows, tableHeader, strings.Repeat("─", contentWidth-4))
-
 	if len(m.currentNode.Children) == 0 {
-		rows = append(rows, lipgloss.NewStyle().Foreground(theme.ColorMuted).Italic(true).Render("  (Directory is empty)"))
+		rows = append(rows, lipgloss.NewStyle().Foreground(theme.ColorMuted).Italic(true).Render("  (empty directory)"))
 	} else {
 		for i := start; i < end; i++ {
-			child := m.currentNode.Children[i]
-			var pct float64
-			if totalDirSize > 0 {
-				pct = (float64(child.Size) / float64(totalDirSize)) * 100.0
+			node := m.currentNode.Children[i]
+			isSelected := (i == m.cursor)
+
+			nameStr := node.Name
+			if node.IsDir {
+				nameStr = "/" + node.Name
 			}
 
-			sizeStr := lipgloss.NewStyle().Width(12).Foreground(theme.ColorInfo).Render(theme.FormatIntBytes(child.Size))
-			bar := theme.RenderProgressBar(barWidth, pct, theme.ColorSuccess, theme.ColorSurfaceAlt)
-			pctStr := lipgloss.NewStyle().Width(7).Foreground(theme.ColorMuted).Render(fmt.Sprintf("%5.1f%%", pct))
-			capacityStr := lipgloss.JoinHorizontal(lipgloss.Left, "[", bar, "]", " ", pctStr)
+			sizeStr := fmt.Sprintf("%10s", theme.FormatIntBytes(node.Size))
 
-			nameStr := child.Name
-			if child.IsDir {
-				nameStr = "📁 " + child.Name + "/"
-				if child.ItemCount > 0 {
-					nameStr += fmt.Sprintf(" (%d)", child.ItemCount)
-				}
-			} else {
-				nameStr = "📄 " + child.Name
+			pct := 0.0
+			if m.currentNode.Size > 0 {
+				pct = (float64(node.Size) / float64(m.currentNode.Size)) * 100.0
+			}
+			bar := theme.RenderProgressBar(barWidth, pct, theme.ColorPrimary, theme.ColorSurfaceAlt)
+			pctStr := fmt.Sprintf("%5.1f%%", pct)
+
+			gutter := "  "
+			if isSelected {
+				gutter = "▶ "
 			}
 
-			line := lipgloss.JoinHorizontal(lipgloss.Left, sizeStr, " ", capacityStr, " ", nameStr)
+			nameWidth := contentWidth - 12 - barWidth - 10 - 8
+			if nameWidth < 15 {
+				nameWidth = 15
+			}
+			if len(nameStr) > nameWidth {
+				nameStr = nameStr[:nameWidth-1] + "…"
+			}
 
-			if i == m.cursor {
+			nameStyled := lipgloss.NewStyle().Width(nameWidth).Render(nameStr)
+			if node.IsDir {
+				nameStyled = lipgloss.NewStyle().Width(nameWidth).Bold(true).Foreground(theme.ColorHighlight).Render(nameStr)
+			}
+
+			line := fmt.Sprintf("%s%s  [ %s ] %s  %s", gutter, sizeStr, bar, pctStr, nameStyled)
+			if isSelected {
 				line = lipgloss.NewStyle().
-					Background(lipgloss.Color("#3d59a1")).
+					Background(lipgloss.Color("#283457")).
 					Foreground(lipgloss.Color("#ffffff")).
 					Bold(true).
-					Width(contentWidth - 4).
+					Width(contentWidth - 2).
 					Render(line)
 			}
 			rows = append(rows, line)
 		}
 	}
 
-	// Scroll indicator
-	if len(m.currentNode.Children) > visibleRows {
-		rows = append(rows, lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("  ▲▼ Showing %d-%d of %d items", start+1, end, len(m.currentNode.Children))))
-	}
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
+	elements := []string{
 		pathBar,
-		helpBar,
-		statusLine,
-		"",
-		lipgloss.JoinVertical(lipgloss.Left, rows...),
-	)
+	}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", lipgloss.JoinVertical(lipgloss.Left, rows...))
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/crypto/ssh"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -42,6 +43,7 @@ type Model struct {
 	keys          []SSHKeyItem
 	sessionsTable table.Model
 	keysTable     table.Model
+	actionMenu    actionmenu.Model
 	focusKeys     bool
 	confirmKill   bool
 	killTTY       string
@@ -203,14 +205,34 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		cmds = append(cmds, m.FetchSSHData())
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "kill":
+					if !m.focusKeys && len(m.sessions) > 0 {
+						idx := m.sessionsTable.Cursor()
+						if idx >= 0 && idx < len(m.sessions) {
+							m.killTTY = m.sessions[idx].TTY
+							m.confirmKill = true
+						}
+					}
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchSSHData())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.confirmKill {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				if m.killTTY != "" {
 					cmds = append(cmds, m.KillSession(m.killTTY))
 				}
 				m.confirmKill = false
-			case "n", "N", "esc":
+			case "n", "N", "esc", "space":
 				m.confirmKill = false
 				m.killStatus = "Kill cancelled"
 			}
@@ -218,7 +240,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "tab":
+		case "tab", "shift+tab":
 			m.focusKeys = !m.focusKeys
 			m.sessionsTable.Focus()
 			m.keysTable.Focus()
@@ -229,7 +251,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "k":
+		case "space":
+			title := "SSH Session Auditor"
+			subtitle := "Select SSH action"
+			if !m.focusKeys && len(m.sessions) > 0 {
+				idx := m.sessionsTable.Cursor()
+				if idx >= 0 && idx < len(m.sessions) {
+					title = fmt.Sprintf("Actions: User %s (TTY: %s)", m.sessions[idx].User, m.sessions[idx].TTY)
+					subtitle = fmt.Sprintf("From IP: %s | Login: %s", m.sessions[idx].FromIP, m.sessions[idx].LoginTime)
+				}
+			}
+			items := []actionmenu.Item{
+				{Key: "kill", Title: "Terminate SSH Session", Description: "Kill processes on this TTY (pkill -9 -t)", Danger: true},
+				{Key: "refresh", Title: "Refresh Sessions & Keys", Description: "Reload active logins and authorized_keys"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if !m.focusKeys && len(m.sessions) > 0 {
 				idx := m.sessionsTable.Cursor()
 				if idx >= 0 && idx < len(m.sessions) {
@@ -237,10 +276,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					m.confirmKill = true
 				}
 			}
-
-		case "r", "R":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchSSHData())
 		}
 	}
 
@@ -272,7 +307,7 @@ func (m *Model) updateTables() {
 }
 
 func (m *Model) updateLayout() {
-	tableH := (m.height - 14) / 2
+	tableH := (m.height - 8) / 2
 	if tableH < 4 {
 		tableH = 4
 	}
@@ -286,12 +321,6 @@ func (m Model) View() string {
 		contentWidth = 40
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Active SSH Sessions ", len(m.sessions))),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Authorized Keys ", len(m.keys))),
-	)
-
 	statusLine := ""
 	if m.confirmKill {
 		statusLine = lipgloss.NewStyle().
@@ -299,31 +328,26 @@ func (m Model) View() string {
 			Background(theme.ColorDanger).
 			Bold(true).
 			Padding(0, 1).
-			Render(fmt.Sprintf("⚠️ Terminate SSH session on %s? (y/N)", m.killTTY))
+			Render(fmt.Sprintf("[!] Terminate SSH session on %s? (y/N)", m.killTTY))
 	} else if m.killStatus != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.killStatus)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.killStatus)
 	}
 
-	sessTitle := theme.CardTitleStyle.Render("💻 ACTIVE LOGIN SESSIONS")
+	sessTitle := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Active Login Sessions")
 	if !m.focusKeys {
-		sessTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("💻 ACTIVE LOGIN SESSIONS (Focused)")
+		sessTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Active Login Sessions")
 	}
 
-	keysTitle := theme.CardTitleStyle.Render("🔑 AUTHORIZED SSH KEYS (~/.ssh/authorized_keys)")
+	keysTitle := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Authorized SSH Keys")
 	if m.focusKeys {
-		keysTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("🔑 AUTHORIZED SSH KEYS (Focused)")
+		keysTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Authorized SSH Keys")
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🛡️ SSH SESSIONS & KEY AUDITOR"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch Pane | k: Kill Session | r: Refresh]"),
-		),
-		statusLine,
-		"",
+	elements := []string{}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements,
 		sessTitle,
 		m.sessionsTable.View(),
 		"",
@@ -331,10 +355,10 @@ func (m Model) View() string {
 		m.keysTable.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

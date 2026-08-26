@@ -239,11 +239,11 @@ func (m Model) View() string {
 			Background(theme.ColorWarning).
 			Bold(true).
 			Padding(0, 1).
-			Render(" 🔴 SHELL CAPTURE ACTIVE (Ctrl+] to unfocus, F1-F6 to switch tabs) ")
+			Render(" ● SHELL CAPTURE ACTIVE (Ctrl+] to unfocus, F1-F6 to switch tabs) ")
 	}
 
 	header := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.CardTitleStyle.Render("💻 MULTIPLEXED PTY SUBSHELL"),
+		theme.CardTitleStyle.Render("MULTIPLEXED PTY SUBSHELL"),
 		"   ",
 		focusBanner,
 	)

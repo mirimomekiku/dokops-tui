@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	mdns "github.com/miekg/dns"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -78,6 +79,7 @@ type Model struct {
 	focus             FocusField
 	records           []DNSRecord
 	table             table.Model
+	actionMenu        actionmenu.Model
 	lastRTT           time.Duration
 	lastStatus        string
 	lastServer        string
@@ -261,6 +263,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateTableRows()
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "query":
+					m.isLoading = true
+					return m, m.ExecuteQuery()
+				case "cycle_type":
+					m.recordTypeIdx = (m.recordTypeIdx + 1) % len(RecordTypes)
+				case "cycle_server":
+					m.nameserverIdx = (m.nameserverIdx + 1) % len(Nameservers)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "tab":
 			m.cycleFocus(true)
@@ -268,16 +286,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "shift+tab":
 			m.cycleFocus(false)
 			return m, nil
+		case "space":
+			if m.focus != FocusDomain && m.focus != FocusCustomServer {
+				title := "DNS Inspector"
+				subtitle := fmt.Sprintf("Domain: %s | Type: %s | Server: %s", m.domainInput.Value(), RecordTypes[m.recordTypeIdx].Name, Nameservers[m.nameserverIdx].Name)
+				items := []actionmenu.Item{
+					{Key: "query", Title: "Execute DNS Query", Description: "Query nameserver for records"},
+					{Key: "cycle_type", Title: "Cycle Record Type", Description: fmt.Sprintf("Current: %s", RecordTypes[m.recordTypeIdx].Name)},
+					{Key: "cycle_server", Title: "Cycle Nameserver", Description: fmt.Sprintf("Current: %s", Nameservers[m.nameserverIdx].Name)},
+				}
+				m.actionMenu.Open(title, subtitle, items)
+				return m, nil
+			}
 		}
 
 		if m.focus == FocusRecordType {
 			switch msg.String() {
-			case "left", "h":
+			case "left", "h", "k", "up":
 				if m.recordTypeIdx > 0 {
 					m.recordTypeIdx--
 				}
 				return m, nil
-			case "right", "l":
+			case "right", "l", "j", "down":
 				if m.recordTypeIdx < len(RecordTypes)-1 {
 					m.recordTypeIdx++
 				}
@@ -290,12 +320,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		if m.focus == FocusNameserver {
 			switch msg.String() {
-			case "left", "h":
+			case "left", "h", "k", "up":
 				if m.nameserverIdx > 0 {
 					m.nameserverIdx--
 				}
 				return m, nil
-			case "right", "l":
+			case "right", "l", "j", "down":
 				if m.nameserverIdx < len(Nameservers)-1 {
 					m.nameserverIdx++
 				}
@@ -327,7 +357,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		if m.focus == FocusResults {
-			if msg.String() == "r" || msg.String() == "enter" {
+			if msg.String() == "enter" {
 				m.isLoading = true
 				return m, m.ExecuteQuery()
 			}
@@ -438,91 +468,70 @@ func (m Model) View() string {
 	nameserverRow := lipgloss.JoinHorizontal(lipgloss.Left, serverPills...)
 
 	// Inputs
-	domainBorder := theme.ColorBorder
+	domainPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  Domain ")
 	if m.focus == FocusDomain {
-		domainBorder = theme.ColorPrimary
+		domainPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Domain ")
 	}
-	domainBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(domainBorder).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Domain / Host: "),
-				m.domainInput.View(),
-			),
-		)
+	domainRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		domainPrefix,
+		m.domainInput.View(),
+	)
 
-	var customServerBox string
 	if Nameservers[m.nameserverIdx].IP == "custom" {
-		csBorder := theme.ColorBorder
+		csPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  Server ")
 		if m.focus == FocusCustomServer {
-			csBorder = theme.ColorPrimary
+			csPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Server ")
 		}
-		customServerBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(csBorder).
-			Padding(0, 1).
-			Render(
-				lipgloss.JoinHorizontal(lipgloss.Center,
-					lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("Server IP: "),
-					m.customServerInput.View(),
-				),
-			)
+		domainRow = lipgloss.JoinHorizontal(lipgloss.Center,
+			domainRow,
+			"   ",
+			csPrefix,
+			m.customServerInput.View(),
+		)
 	}
 
 	// Status & RTT banner
-	var statusBadge string
+	var statusLine string
 	if m.isLoading {
-		statusBadge = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("⏳ Querying nameserver...")
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Querying nameserver...")
 	} else if m.err != nil {
-		statusBadge = theme.BadgeDanger.Render(fmt.Sprintf(" Error: %v ", m.err))
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorDanger).Render(fmt.Sprintf("Error: %v", m.err))
 	} else {
-		statusBadge = lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.BadgeSuccess.Render(fmt.Sprintf(" %s ", m.lastStatus)),
-			" ",
-			theme.BadgeInfo.Render(fmt.Sprintf(" RTT: %s ", theme.FormatDuration(m.lastRTT))),
-			" ",
+		statusLine = lipgloss.JoinHorizontal(lipgloss.Center,
+			lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %s", m.lastStatus)),
+			"   ",
+			lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("RTT: %s", theme.FormatDuration(m.lastRTT))),
+			"   ",
 			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("via %s (%d answers)", m.lastServer, len(m.records))),
 		)
 	}
 
 	topControls := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🔍 DNS RECORD INSPECTOR (dig)"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch focus | h/l: Select option | Enter: Query]"),
-		),
+		domainRow,
 		"",
 		lipgloss.JoinHorizontal(lipgloss.Center,
-			domainBox,
-			"  ",
-			customServerBox,
-		),
-		"",
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			lipgloss.NewStyle().Width(14).Bold(true).Foreground(theme.ColorPrimary).Render("Record Type:"),
+			lipgloss.NewStyle().Width(12).Bold(true).Foreground(theme.ColorPrimary).Render("Type:"),
 			recordTypeRow,
 		),
 		"",
 		lipgloss.JoinHorizontal(lipgloss.Center,
-			lipgloss.NewStyle().Width(14).Bold(true).Foreground(theme.ColorSecondary).Render("Nameserver:"),
+			lipgloss.NewStyle().Width(12).Bold(true).Foreground(theme.ColorSecondary).Render("Server:"),
 			nameserverRow,
 		),
 	)
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
+	elements := []string{
 		topControls,
-		"",
-		statusBadge,
-		"",
-		m.table.View(),
-	)
+	}
+	if statusLine != "" {
+		elements = append(elements, "", statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

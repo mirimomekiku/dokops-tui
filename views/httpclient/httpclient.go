@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -55,6 +56,7 @@ type Model struct {
 	methodIdx    int
 	focus        FocusArea
 	viewport     viewport.Model
+	actionMenu   actionmenu.Model
 	lastResponse *ResponseResultMsg
 	isLoading    bool
 	width        int
@@ -194,6 +196,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateResponseViewport()
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "send":
+					m.isLoading = true
+					return m, ExecuteRequest(HTTPMethods[m.methodIdx], m.urlInput.Value(), m.bodyInput.Value())
+				case "method":
+					m.methodIdx = (m.methodIdx + 1) % len(HTTPMethods)
+				case "clear":
+					m.lastResponse = nil
+					m.viewport.SetContent("Send a request to inspect response headers, JSON payload, and latency waterfall.")
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "tab":
 			m.cycleFocus(true)
@@ -205,20 +224,25 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		if m.focus == FocusMethod {
 			switch msg.String() {
-			case "left", "h":
-				if m.methodIdx > 0 {
-					m.methodIdx--
-				}
+			case "j", "down", "right":
+				m.methodIdx = (m.methodIdx + 1) % len(HTTPMethods)
 				return m, nil
-			case "right", "l":
-				if m.methodIdx < len(HTTPMethods)-1 {
-					m.methodIdx++
-				}
+			case "k", "up", "left":
+				m.methodIdx = (m.methodIdx + len(HTTPMethods) - 1) % len(HTTPMethods)
 				return m, nil
 			case "enter":
-				m.focus = FocusURL
-				m.urlInput.Focus()
-				return m, textinput.Blink
+				m.isLoading = true
+				return m, ExecuteRequest(HTTPMethods[m.methodIdx], m.urlInput.Value(), m.bodyInput.Value())
+			case "space":
+				title := "HTTP Client"
+				subtitle := fmt.Sprintf("Method: %s | URL: %s", HTTPMethods[m.methodIdx], m.urlInput.Value())
+				items := []actionmenu.Item{
+					{Key: "send", Title: "Send Request", Description: "Execute HTTP/HTTPS request"},
+					{Key: "method", Title: "Cycle HTTP Method", Description: fmt.Sprintf("Current: %s", HTTPMethods[m.methodIdx]), Icon: "⚡"},
+					{Key: "clear", Title: "Clear Response", Description: "Reset response inspector"},
+				}
+				m.actionMenu.Open(title, subtitle, items)
+				return m, nil
 			}
 		}
 
@@ -243,9 +267,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		if m.focus == FocusResponse {
-			if msg.String() == "r" || msg.String() == "enter" {
+			if msg.String() == "enter" {
 				m.isLoading = true
 				return m, ExecuteRequest(HTTPMethods[m.methodIdx], m.urlInput.Value(), m.bodyInput.Value())
+			}
+			if msg.String() == "space" {
+				title := "HTTP Client"
+				subtitle := fmt.Sprintf("Method: %s | URL: %s", HTTPMethods[m.methodIdx], m.urlInput.Value())
+				items := []actionmenu.Item{
+					{Key: "send", Title: "Re-send Request", Description: "Execute HTTP/HTTPS request"},
+					{Key: "method", Title: "Cycle HTTP Method", Description: fmt.Sprintf("Current: %s", HTTPMethods[m.methodIdx]), Icon: "⚡"},
+					{Key: "clear", Title: "Clear Response", Description: "Reset response inspector"},
+				}
+				m.actionMenu.Open(title, subtitle, items)
+				return m, nil
 			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
@@ -333,7 +368,12 @@ func (m *Model) updateResponseViewport() {
 		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorText).Render(string(m.lastResponse.Body)))
 	}
 
-	m.viewport.SetContent(sb.String())
+	wrapW := m.viewport.Width - 2
+	if wrapW < 20 {
+		wrapW = 20
+	}
+	wrapped := lipgloss.NewStyle().Width(wrapW).Render(sb.String())
+	m.viewport.SetContent(wrapped)
 	m.viewport.GotoTop()
 }
 
@@ -352,7 +392,7 @@ func (m Model) View() string {
 		rightWidth = 38
 	}
 
-	// 1. Method Selector
+	// 1. Controls
 	var methodPills []string
 	for i, meth := range HTTPMethods {
 		if i == m.methodIdx {
@@ -365,46 +405,24 @@ func (m Model) View() string {
 	}
 	methodSection := lipgloss.JoinHorizontal(lipgloss.Left, methodPills...)
 
-	// Focus Highlights
-	urlBorderColor := theme.ColorBorder
+	urlPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  URL     ")
 	if m.focus == FocusURL {
-		urlBorderColor = theme.ColorPrimary
+		urlPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ URL     ")
 	}
-	bodyBorderColor := theme.ColorBorder
+	urlRow := lipgloss.JoinHorizontal(lipgloss.Center, urlPrefix, m.urlInput.View())
+
+	bodyPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  Body    ")
 	if m.focus == FocusBody {
-		bodyBorderColor = theme.ColorPrimary
+		bodyPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Body    ")
 	}
-
-	urlBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(urlBorderColor).
-		Padding(0, 1).
-		Width(leftWidth - 4).
-		Render(
-			lipgloss.JoinVertical(lipgloss.Left,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Target URL:"),
-				m.urlInput.View(),
-			),
-		)
-
-	bodyBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(bodyBorderColor).
-		Padding(0, 1).
-		Width(leftWidth - 4).
-		Render(
-			lipgloss.JoinVertical(lipgloss.Left,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Payload Body (JSON):"),
-				m.bodyInput.View(),
-			),
-		)
+	bodyRow := lipgloss.JoinHorizontal(lipgloss.Center, bodyPrefix, m.bodyInput.View())
 
 	// Timing Waterfall
 	var waterfallLines []string
-	waterfallLines = append(waterfallLines, lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("⚡ NETWORK LATENCY WATERFALL"))
+	waterfallLines = append(waterfallLines, lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("Latency Breakdown"))
 
 	if m.isLoading {
-		waterfallLines = append(waterfallLines, "", lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("⏳ Executing HTTP request & tracing latencies..."))
+		waterfallLines = append(waterfallLines, "", lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Executing HTTP request & tracing latencies..."))
 	} else if m.lastResponse != nil {
 		t := m.lastResponse.Trace
 		totalMs := float64(t.TotalTime.Microseconds()) / 1000.0
@@ -435,42 +453,27 @@ func (m Model) View() string {
 		waterfallLines = append(waterfallLines, "", lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("No request executed yet. Press Enter to send."))
 	}
 
-	waterfallBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
-		Padding(0, 1).
-		Width(leftWidth - 4).
-		Render(lipgloss.JoinVertical(lipgloss.Left, waterfallLines...))
-
 	leftPane := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center, theme.CardTitleStyle.Render("🌐 HTTP CLIENT"), "  ", methodSection),
-		urlBox,
-		bodyBox,
-		waterfallBox,
+		lipgloss.JoinHorizontal(lipgloss.Center, lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("HTTP Request"), "  ", methodSection),
+		"",
+		urlRow,
+		bodyRow,
+		"",
+		lipgloss.JoinVertical(lipgloss.Left, waterfallLines...),
 	)
 
 	// Right Pane: Response Viewer
-	rightBorderColor := theme.ColorBorder
-	if m.focus == FocusResponse {
-		rightBorderColor = theme.ColorPrimary
-	}
-	m.viewport.Style = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(rightBorderColor).
-		Padding(0, 1)
-
 	rightPane := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("📥 RESPONSE INSPECTION"),
-			"  ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Focus | j/k: Scroll | Enter: Send]"),
-		),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Response Inspection"),
+		"",
 		m.viewport.View(),
 	)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	rendered := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(leftWidth).Render(leftPane),
 		"  ",
 		lipgloss.NewStyle().Width(rightWidth).Render(rightPane),
 	)
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

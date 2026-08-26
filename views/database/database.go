@@ -15,6 +15,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -45,6 +46,7 @@ type Model struct {
 	connInput     textinput.Model
 	queryInput    textinput.Model
 	db            *sql.DB
+	actionMenu    actionmenu.Model
 	isConnected   bool
 	table         table.Model
 	viewport      viewport.Model
@@ -221,8 +223,41 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "query":
+					return m, m.ExecuteQuery(m.queryInput.Value())
+				case "connect":
+					m.statusMessage = "Connecting to database..."
+					driver := "pgx"
+					connStr := strings.TrimSpace(m.connInput.Value())
+					if strings.HasPrefix(connStr, "mysql://") || strings.Contains(connStr, "@tcp(") {
+						driver = "mysql"
+						connStr = strings.TrimPrefix(connStr, "mysql://")
+					}
+					if m.db != nil {
+						_ = m.db.Close()
+					}
+					db, err := sql.Open(driver, connStr)
+					if err == nil {
+						m.db = db
+					}
+					return m, m.ConnectDB()
+				case "pg_activity":
+					m.queryInput.SetValue("SELECT pid, usename, client_addr, state, query FROM pg_stat_activity WHERE state IS NOT NULL LIMIT 15;")
+					return m, m.ExecuteQuery(m.queryInput.Value())
+				case "pg_db_stats":
+					m.queryInput.SetValue("SELECT datname, numbackends, xact_commit, blks_read FROM pg_stat_database LIMIT 15;")
+					return m, m.ExecuteQuery(m.queryInput.Value())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
-		case "tab":
+		case "tab", "shift+tab", "up", "down", "ctrl+n", "ctrl+p":
 			m.focusQuery = !m.focusQuery
 			if m.focusQuery {
 				m.queryInput.Focus()
@@ -302,14 +337,14 @@ func (m *Model) renderTableResults(cols []string, data [][]string) {
 }
 
 func (m *Model) updateLayout() {
-	inputWidth := m.width - 24
+	inputWidth := m.width - 20
 	if inputWidth < 30 {
 		inputWidth = 30
 	}
 	m.connInput.Width = inputWidth
 	m.queryInput.Width = inputWidth
 
-	tableHeight := m.height - 14
+	tableHeight := m.height - 8
 	if tableHeight < 5 {
 		tableHeight = 5
 	}
@@ -324,66 +359,49 @@ func (m Model) View() string {
 
 	var statusBadge string
 	if m.isConnected {
-		statusBadge = theme.BadgeSuccess.Render(" CONNECTED ")
+		statusBadge = lipgloss.NewStyle().Foreground(theme.ColorSuccess).Bold(true).Render("● connected")
 	} else {
-		statusBadge = theme.BadgeDanger.Render(" DISCONNECTED ")
+		statusBadge = lipgloss.NewStyle().Foreground(theme.ColorDanger).Render("○ not connected")
 	}
 
-	connBorder := theme.ColorBorder
+	connPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  URI   ")
 	if !m.focusQuery {
-		connBorder = theme.ColorPrimary
+		connPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ URI   ")
 	}
-	connBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(connBorder).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Conn URI: "),
-				m.connInput.View(),
-				"  ",
-				statusBadge,
-			),
-		)
+	connRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		connPrefix,
+		m.connInput.View(),
+		"   ",
+		statusBadge,
+	)
 
-	queryBorder := theme.ColorBorder
+	queryPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  SQL   ")
 	if m.focusQuery {
-		queryBorder = theme.ColorPrimary
+		queryPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ SQL   ")
 	}
-	queryBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(queryBorder).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("SQL Query: "),
-				m.queryInput.View(),
-			),
-		)
+	queryRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		queryPrefix,
+		m.queryInput.View(),
+	)
 
 	statusLine := ""
 	if m.statusMessage != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.statusMessage)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.statusMessage)
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🗄️ DATABASE HEALTH & QUERY RUNNER (Postgres/MySQL)"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch Conn/Query | Enter: Run | j/k: Table]"),
-		),
-		"",
-		connBox,
-		queryBox,
-		statusLine,
-		"",
-		m.table.View(),
-	)
+	elements := []string{
+		connRow,
+		queryRow,
+	}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

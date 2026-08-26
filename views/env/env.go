@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -19,7 +20,7 @@ type EnvStatus string
 
 const (
 	StatusValid   EnvStatus = "VALID"
-	StatusMissing EnvStatus = "MISSING ⚠️"
+	StatusMissing EnvStatus = "MISSING"
 	StatusEmpty   EnvStatus = "EMPTY"
 	StatusExtra   EnvStatus = "EXTRA / UNDOC"
 )
@@ -44,6 +45,7 @@ type Model struct {
 	examPathInput textinput.Model
 	items         []EnvDriftItem
 	table         table.Model
+	actionMenu    actionmenu.Model
 	focusExample  bool
 	isLoading     bool
 	width         int
@@ -221,8 +223,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateTableRows()
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "validate":
+					m.isLoading = true
+					return m, m.ValidateEnv()
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
-		case "tab":
+		case "tab", "shift+tab", "up", "down", "ctrl+n", "ctrl+p":
 			m.focusExample = !m.focusExample
 			if m.focusExample {
 				m.examPathInput.Focus()
@@ -233,7 +247,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "enter", "r":
+		case "space":
+			title := ".ENV Validator"
+			subtitle := "Select validation action"
+			items := []actionmenu.Item{
+				{Key: "validate", Title: "Compare & Validate .env", Description: "Diff active environment against .example"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			m.isLoading = true
 			return m, m.ValidateEnv()
 		}
@@ -274,11 +297,18 @@ func (m *Model) updateTableRows() {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 12
-	if contentHeight < 6 {
-		contentHeight = 6
+	inputWidth := (m.width - 24) / 2
+	if inputWidth < 20 {
+		inputWidth = 20
 	}
-	m.table.SetHeight(contentHeight)
+	m.envPathInput.Width = inputWidth
+	m.examPathInput.Width = inputWidth
+
+	tableHeight := m.height - 8
+	if tableHeight < 5 {
+		tableHeight = 5
+	}
+	m.table.SetHeight(tableHeight)
 
 	availableWidth := m.width - 6
 	if availableWidth > 80 {
@@ -302,35 +332,23 @@ func (m Model) View() string {
 		contentWidth = 40
 	}
 
-	envBorder := theme.ColorBorder
+	envPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  .env     ")
 	if !m.focusExample {
-		envBorder = theme.ColorPrimary
+		envPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ .env     ")
 	}
-	envBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(envBorder).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Target .env: "),
-				m.envPathInput.View(),
-			),
-		)
 
-	examBorder := theme.ColorBorder
+	examPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  .example ")
 	if m.focusExample {
-		examBorder = theme.ColorPrimary
+		examPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ .example ")
 	}
-	examBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(examBorder).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("Template .example: "),
-				m.examPathInput.View(),
-			),
-		)
+
+	inputRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		envPrefix,
+		m.envPathInput.View(),
+		"   ",
+		examPrefix,
+		m.examPathInput.View(),
+	)
 
 	var missing, empty, extra, valid int
 	for _, item := range m.items {
@@ -346,38 +364,30 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Synced ", valid)),
-		" ",
-		theme.BadgeDanger.Render(fmt.Sprintf(" %d Missing ", missing)),
-		" ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" %d Empty ", empty)),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Extra ", extra)),
+	statusHeader := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Variables"),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %d synced", valid)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorDanger).Render(fmt.Sprintf("⨯ %d missing", missing)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorWarning).Render(fmt.Sprintf("○ %d empty", empty)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("+ %d extra", extra)),
 	)
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🌱 ENVIRONMENT DRIFT & .ENV VALIDATOR"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch File | Enter: Compare]"),
-		),
+	elements := []string{
+		inputRow,
 		"",
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			envBox,
-			"  ",
-			examBox,
-		),
+		statusHeader,
 		"",
 		m.table.View(),
-	)
+	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -44,6 +45,7 @@ type InspectResultMsg struct {
 type Model struct {
 	targetInput textinput.Model
 	viewport    viewport.Model
+	actionMenu  actionmenu.Model
 	lastInfo    *CertInfo
 	lastTarget  string
 	isLoading   bool
@@ -248,6 +250,18 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateViewport()
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "inspect":
+					m.isLoading = true
+					return m, m.InspectTarget()
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "enter":
 			m.isLoading = true
@@ -257,6 +271,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.targetInput, cmd = m.targetInput.Update(msg)
 		cmds = append(cmds, cmd)
+
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -357,35 +375,21 @@ func (m Model) View() string {
 		contentWidth = 40
 	}
 
-	inputBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorPrimary).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Target Host / File: "),
-				m.targetInput.View(),
-				"  ",
-				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Enter: Inspect]"),
-			),
-		)
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🔒 SSL/TLS CERTIFICATE INSPECTOR (s_client)"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Verify validity, Let's Encrypt renewals & SANs]"),
-		),
-		"",
-		inputBox,
-		"",
-		m.viewport.View(),
+	inputRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Target  "),
+		m.targetInput.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	elements := []string{
+		inputRow,
+		"",
+		m.viewport.View(),
+	}
+
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

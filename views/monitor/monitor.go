@@ -13,6 +13,7 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/process"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -56,6 +57,7 @@ type Model struct {
 	usedSwap    uint64
 	processes   []ProcessInfo
 	table       table.Model
+	actionMenu  actionmenu.Model
 	sortField   SortField
 	sortDesc    bool
 	killStatus  string
@@ -237,9 +239,60 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "kill_term":
+					if m.selectedPID > 0 {
+						err := syscall.Kill(int(m.selectedPID), syscall.SIGTERM)
+						if err != nil {
+							m.killStatus = fmt.Sprintf("Failed to kill PID %d: %v", m.selectedPID, err)
+						} else {
+							m.killStatus = fmt.Sprintf("Successfully sent SIGTERM to PID %d", m.selectedPID)
+							cmds = append(cmds, FetchSystemStats())
+						}
+					}
+				case "kill_kill":
+					if m.selectedPID > 0 {
+						err := syscall.Kill(int(m.selectedPID), syscall.SIGKILL)
+						if err != nil {
+							m.killStatus = fmt.Sprintf("Failed to kill PID %d: %v", m.selectedPID, err)
+						} else {
+							m.killStatus = fmt.Sprintf("Successfully sent SIGKILL to PID %d", m.selectedPID)
+							cmds = append(cmds, FetchSystemStats())
+						}
+					}
+				case "sort_cpu":
+					m.sortField = SortCPU
+					m.sortDesc = true
+					m.sortProcesses()
+					m.updateTableRows()
+				case "sort_mem":
+					m.sortField = SortMem
+					m.sortDesc = true
+					m.sortProcesses()
+					m.updateTableRows()
+				case "sort_pid":
+					m.sortField = SortPID
+					m.sortDesc = false
+					m.sortProcesses()
+					m.updateTableRows()
+				case "sort_name":
+					m.sortField = SortName
+					m.sortDesc = false
+					m.sortProcesses()
+					m.updateTableRows()
+				case "refresh":
+					cmds = append(cmds, FetchSystemStats())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.killConfirm {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				if m.selectedPID > 0 {
 					err := syscall.Kill(int(m.selectedPID), syscall.SIGTERM)
 					if err != nil {
@@ -250,7 +303,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 				m.killConfirm = false
-			case "n", "N", "esc":
+			case "n", "N", "esc", "space":
 				m.killConfirm = false
 				m.killStatus = "Kill cancelled"
 			}
@@ -258,52 +311,43 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "c":
-			if m.sortField == SortCPU {
-				m.sortDesc = !m.sortDesc
-			} else {
-				m.sortField = SortCPU
-				m.sortDesc = true
+		case "space":
+			var curPid int32
+			pName := "Process"
+			if len(m.table.Rows()) > 0 && m.table.Cursor() < len(m.processes) {
+				selRow := m.table.SelectedRow()
+				if len(selRow) > 0 {
+					fmt.Sscanf(selRow[0], "%d", &curPid)
+					if len(selRow) > 5 {
+						pName = selRow[5]
+					}
+				}
 			}
-			m.sortProcesses()
-			m.updateTableRows()
-		case "m":
-			if m.sortField == SortMem {
-				m.sortDesc = !m.sortDesc
-			} else {
-				m.sortField = SortMem
-				m.sortDesc = true
+			m.selectedPID = curPid
+			title := fmt.Sprintf("Actions: PID %d (%s)", curPid, pName)
+			subtitle := "Select process action"
+			items := []actionmenu.Item{
+				{Key: "kill_term", Title: "Terminate Process (SIGTERM)", Description: "Graceful process termination", Danger: true},
+				{Key: "kill_kill", Title: "Kill Process (SIGKILL)", Description: "Forceful kill (-9)", Danger: true},
+				{Key: "sort_cpu", Title: "Sort by CPU%", Description: "Highest CPU usage first"},
+				{Key: "sort_mem", Title: "Sort by MEM%", Description: "Highest RAM usage first"},
+				{Key: "sort_pid", Title: "Sort by PID", Description: "Order by Process ID"},
+				{Key: "sort_name", Title: "Sort by Name", Description: "Alphabetical process ordering"},
+				{Key: "refresh", Title: "Refresh Processes", Description: "Sample system statistics now"},
 			}
-			m.sortProcesses()
-			m.updateTableRows()
-		case "p":
-			if m.sortField == SortPID {
-				m.sortDesc = !m.sortDesc
-			} else {
-				m.sortField = SortPID
-				m.sortDesc = false
-			}
-			m.sortProcesses()
-			m.updateTableRows()
-		case "n":
-			if m.sortField == SortName {
-				m.sortDesc = !m.sortDesc
-			} else {
-				m.sortField = SortName
-				m.sortDesc = false
-			}
-			m.sortProcesses()
-			m.updateTableRows()
-		case "r":
-			cmds = append(cmds, FetchSystemStats())
-		case "k":
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if len(m.table.Rows()) > 0 && m.table.Cursor() < len(m.processes) {
 				selRow := m.table.SelectedRow()
 				if len(selRow) > 0 {
 					var pid int32
-					fmt.Sscanf(selRow[0], "%d", &pid)
-					m.selectedPID = pid
-					m.killConfirm = true
+					_, err := fmt.Sscanf(selRow[0], "%d", &pid)
+					if err == nil {
+						m.selectedPID = pid
+						m.killConfirm = true
+					}
 				}
 			}
 		}
@@ -319,7 +363,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) updateLayout() {
-	tableHeight := m.height - 18
+	cpuRows := (len(m.cpuUsage) + 1) / 2
+	if cpuRows < 1 {
+		cpuRows = 1
+	}
+	if cpuRows > 4 {
+		cpuRows = 4
+	}
+	tableHeight := m.height - cpuRows - 8
 	if tableHeight < 5 {
 		tableHeight = 5
 	}
@@ -358,7 +409,8 @@ func (m Model) View() string {
 
 	var cpuLines []string
 	numCPUs := len(m.cpuUsage)
-	for i := 0; i < numCPUs; i += 2 {
+	maxCPURows := 4
+	for i := 0; i < numCPUs && (i/2) < maxCPURows; i += 2 {
 		left := ""
 		right := ""
 		leftPct := m.cpuUsage[i]
@@ -374,19 +426,6 @@ func (m Model) View() string {
 		)
 		cpuLines = append(cpuLines, row)
 	}
-
-	cpuSection := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
-		Padding(0, 1).
-		Width(contentWidth).
-		Render(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				theme.CardTitleStyle.Render("⚡ CPU CORES USAGE"),
-				lipgloss.JoinVertical(lipgloss.Left, cpuLines...),
-			),
-		)
 
 	// 2. Memory & Swap Section
 	var memPct, swapPct float64
@@ -409,19 +448,6 @@ func (m Model) View() string {
 		lipgloss.NewStyle().Width(halfWidth).Render(swapGauge),
 	)
 
-	memSection := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
-		Padding(0, 1).
-		Width(contentWidth).
-		Render(
-			lipgloss.JoinVertical(
-				lipgloss.Left,
-				theme.CardTitleStyle.Render("💾 MEMORY & SWAP"),
-				memRow,
-			),
-		)
-
 	// 3. Process Table Section
 	sortIndicator := " [Sort: "
 	switch m.sortField {
@@ -441,7 +467,7 @@ func (m Model) View() string {
 	}
 
 	procHeader := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.CardTitleStyle.Render("📊 PROCESS LIST"),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Processes"),
 		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf(" (%d processes)%s", len(m.processes), sortIndicator)),
 	)
 
@@ -452,27 +478,27 @@ func (m Model) View() string {
 			Background(theme.ColorDanger).
 			Bold(true).
 			Padding(0, 1).
-			Render(fmt.Sprintf("⚠️ Kill PID %d? (y/N)", m.selectedPID))
+			Render(fmt.Sprintf("[!] Kill PID %d? (y/N)", m.selectedPID))
 	} else if m.killStatus != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.killStatus)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.killStatus)
 	}
 
-	procBody := lipgloss.JoinVertical(lipgloss.Left,
-		procHeader,
-		statusLine,
-		m.table.View(),
-	)
+	var elements []string
+	if len(cpuLines) > 0 {
+		elements = append(elements, lipgloss.JoinVertical(lipgloss.Left, cpuLines...))
+	}
+	elements = append(elements, memRow)
 
-	procSection := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+
+	elements = append(elements, "", procHeader, m.table.View())
+
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(procBody)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		cpuSection,
-		memSection,
-		procSection,
-	)
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/coreos/go-systemd/v22/dbus"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -55,6 +56,7 @@ type Model struct {
 	filteredUnits  []UnitItem
 	table          table.Model
 	logsViewport   viewport.Model
+	actionMenu     actionmenu.Model
 	viewingLogs    bool
 	activeLogUnit  string
 	filter         FilterMode
@@ -299,7 +301,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case UnitLogsMsg:
-		m.logsViewport.SetContent(msg.Logs)
+		m.setLogContent(msg.Logs)
 		m.logsViewport.GotoBottom()
 
 	case ServiceActionMsg:
@@ -311,9 +313,53 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				sel := m.getSelectedUnit()
+				switch action {
+				case "start":
+					if sel != nil {
+						m.actionStatus = fmt.Sprintf("Starting %s...", sel.Name)
+						cmds = append(cmds, m.PerformAction(sel.Name, "start"))
+					}
+				case "stop":
+					if sel != nil {
+						m.actionStatus = fmt.Sprintf("Stopping %s...", sel.Name)
+						cmds = append(cmds, m.PerformAction(sel.Name, "stop"))
+					}
+				case "restart":
+					if sel != nil {
+						m.actionStatus = fmt.Sprintf("Restarting %s...", sel.Name)
+						cmds = append(cmds, m.PerformAction(sel.Name, "restart"))
+					}
+				case "logs":
+					if sel != nil {
+						m.viewingLogs = true
+						m.activeLogUnit = sel.Name
+						m.setLogContent("Loading journal logs for " + sel.Name + "...")
+						cmds = append(cmds, m.FetchLogs(sel.Name))
+					}
+				case "filter_active":
+					m.filter = FilterActive
+					m.applyFilter()
+				case "filter_failed":
+					m.filter = FilterFailed
+					m.applyFilter()
+				case "filter_all":
+					m.filter = FilterAll
+					m.applyFilter()
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchUnits())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingLogs {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingLogs = false
 				return m, nil
 			default:
@@ -324,31 +370,29 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "f":
-			m.filter = (m.filter + 1) % 4
-			m.applyFilter()
-		case "R":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchUnits())
-		case "r":
+		case "space":
 			sel := m.getSelectedUnit()
+			title := "Systemd Services"
+			subtitle := "Select an action"
 			if sel != nil {
-				m.actionStatus = fmt.Sprintf("Restarting %s...", sel.Name)
-				cmds = append(cmds, m.PerformAction(sel.Name, "restart"))
+				title = "Actions: " + sel.Name
+				subtitle = fmt.Sprintf("Active: %s (%s)", sel.ActiveState, sel.SubState)
 			}
-		case "u", "enter":
-			sel := m.getSelectedUnit()
-			if sel != nil {
-				m.actionStatus = fmt.Sprintf("Starting %s...", sel.Name)
-				cmds = append(cmds, m.PerformAction(sel.Name, "start"))
+			items := []actionmenu.Item{
+				{Key: "logs", Title: "View Journal Logs", Description: "Inspect journalctl logs"},
+				{Key: "restart", Title: "Restart Service", Description: "systemctl restart"},
+				{Key: "start", Title: "Start Service", Description: "systemctl start"},
+				{Key: "stop", Title: "Stop Service", Description: "systemctl stop", Danger: true},
+				{Key: "filter_active", Title: "Filter: Active Only", Description: "Show only active units"},
+				{Key: "filter_failed", Title: "Filter: Failed Only", Description: "Show failed/degraded units"},
+				{Key: "filter_all", Title: "Filter: All Units", Description: "Show all loaded units"},
+				{Key: "refresh", Title: "Refresh List", Description: "Reload systemctl units"},
 			}
-		case "s":
-			sel := m.getSelectedUnit()
-			if sel != nil {
-				m.actionStatus = fmt.Sprintf("Stopping %s...", sel.Name)
-				cmds = append(cmds, m.PerformAction(sel.Name, "stop"))
-			}
-		case "l":
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
+			// Primary action: View Journal Logs
 			sel := m.getSelectedUnit()
 			if sel != nil {
 				m.viewingLogs = true
@@ -369,7 +413,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 10
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -403,6 +447,14 @@ func (m *Model) updateLayout() {
 	m.logsViewport.Height = vpHeight
 }
 
+func (m *Model) setLogContent(text string) {
+	w := m.logsViewport.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.logsViewport.SetContent(lipgloss.NewStyle().Width(w).Render(text))
+}
+
 func (m Model) View() string {
 	contentWidth := m.width - 4
 	if contentWidth < 40 {
@@ -411,31 +463,24 @@ func (m Model) View() string {
 
 	if m.systemdOffline {
 		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorWarning).
+			Foreground(theme.ColorWarning).
 			Padding(1, 2).
-			Width(contentWidth).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Left,
-					theme.BadgeWarning.Render(" SYSTEMD NOT DETECTED "),
+					lipgloss.NewStyle().Bold(true).Foreground(theme.ColorWarning).Render("Systemd not detected"),
 					"",
-					lipgloss.NewStyle().Foreground(theme.ColorText).Bold(true).Render("Unable to connect to systemd DBus socket or execute systemctl."),
+					lipgloss.NewStyle().Foreground(theme.ColorText).Render("Unable to connect to systemd DBus socket or execute systemctl."),
 					lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("Details: %v", m.err)),
-					"",
-					lipgloss.NewStyle().Foreground(theme.ColorInfo).Render("💡 Tip: This host may be a container, non-systemd Linux distribution, or lacking DBus permissions."),
-					lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Press [R] to retry connection."),
 				),
 			)
 	}
 
 	if m.viewingLogs {
 		logsHeader := lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.BadgeInfo.Render(" JOURNALCTL LOGS "),
-			" ",
-			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(m.activeLogUnit),
+			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("Logs: "+m.activeLogUnit),
 			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Close | j/k: Scroll]"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc / q: Close  j/k: Scroll"),
 		)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			logsHeader,
@@ -459,23 +504,23 @@ func (m Model) View() string {
 	filterName := "ALL"
 	switch m.filter {
 	case FilterActive:
-		filterName = "ACTIVE ONLY"
+		filterName = "active"
 	case FilterFailed:
-		filterName = "FAILED ONLY"
+		filterName = "failed"
 	case FilterInactive:
-		filterName = "INACTIVE ONLY"
+		filterName = "inactive"
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Active ", active)),
-		" ",
-		theme.BadgeDanger.Render(fmt.Sprintf(" %d Failed ", failed)),
-		" ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" %d Inactive ", inactive)),
+	statusHeader := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Services"),
 		"   ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" Filter: %s [f] ", filterName)),
-		" ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(Showing %d of %d units)", len(m.filteredUnits), len(m.units))),
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %d active", active)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorDanger).Render(fmt.Sprintf("⨯ %d failed", failed)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("○ %d inactive", inactive)),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("filter: %s (showing %d of %d)", filterName, len(m.filteredUnits), len(m.units))),
 	)
 
 	statusLine := ""
@@ -483,22 +528,16 @@ func (m Model) View() string {
 		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.actionStatus)
 	}
 
-	hintBar := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(
-		"[u/Enter: Start]  [s: Stop]  [r: Restart]  [l: Journal Logs]  [f: Filter]  [R: Refresh]",
-	)
+	elements := []string{statusHeader}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center, theme.CardTitleStyle.Render("⚙️ SYSTEMD SERVICES (systemctl)"), "  ", statsBadge),
-		hintBar,
-		statusLine,
-		"",
-		m.table.View(),
-	)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

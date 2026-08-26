@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -160,11 +161,13 @@ type Model struct {
 	table          table.Model
 	domainInput    textinput.Model
 	previewVP      viewport.Model
+	actionMenu     actionmenu.Model
 	selectedProj   *ProjectInfo
 	socketChoice   int
 	availableSocks []string
 	statusMessage  string
 	isGenerating   bool
+	focusInput     bool
 	width          int
 	height         int
 	err            error
@@ -332,7 +335,7 @@ func (m Model) GenerateAndDeployPipeline() tea.Cmd {
 
 		return DeployPipelineMsg{
 			Success: true,
-			Output:  fmt.Sprintf("✓ Generated %s\n✓ Symlinked %s\n✓ Nginx syntax test OK\n✓ Nginx reloaded successfully!", availPath, enabPath),
+			Output:  fmt.Sprintf("Generated %s\nSymlinked %s\nNginx syntax test OK\nNginx reloaded successfully", availPath, enabPath),
 		}
 	}
 }
@@ -395,7 +398,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateTableRows()
 		if len(m.projects) > 0 {
 			m.selectedProj = &m.projects[0]
-			m.previewVP.SetContent(m.renderTemplateString())
+			m.setPreviewContent(m.renderTemplateString())
 		}
 
 	case DeployPipelineMsg:
@@ -403,37 +406,80 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.statusMessage = msg.Output
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "deploy":
+					m.isGenerating = true
+					m.statusMessage = "Generating config and testing Nginx..."
+					return m, m.GenerateAndDeployPipeline()
+				case "socket":
+					m.socketChoice = (m.socketChoice + 1) % len(m.availableSocks)
+					m.setPreviewContent(m.renderTemplateString())
+				case "rescan":
+					return m, m.ScanDirectory("/var/www")
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
-		case "up", "down", "j", "k":
+		case "tab", "shift+tab":
+			m.focusInput = !m.focusInput
+			if m.focusInput {
+				m.domainInput.Focus()
+				m.table.Blur()
+			} else {
+				m.domainInput.Blur()
+				m.table.Focus()
+			}
+			return m, nil
+
+		case "space":
+			if !m.focusInput {
+				title := "Auto-Nginx Generator"
+				subtitle := "Select Nginx template action"
+				if m.selectedProj != nil {
+					title = "Actions: " + m.selectedProj.Name
+					subtitle = fmt.Sprintf("Framework: %s | Path: %s", m.selectedProj.Framework, m.selectedProj.Path)
+				}
+				items := []actionmenu.Item{
+					{Key: "deploy", Title: "Generate & Deploy Nginx Config", Description: "Write sites-available, symlink & reload"},
+					{Key: "socket", Title: "Cycle FastCGI PHP Socket", Description: fmt.Sprintf("Current: %s", m.availableSocks[m.socketChoice])},
+					{Key: "rescan", Title: "Rescan /var/www Projects", Description: "Auto-detect project frameworks"},
+				}
+				m.actionMenu.Open(title, subtitle, items)
+				return m, nil
+			}
+
+		case "enter":
+			if !m.focusInput {
+				m.isGenerating = true
+				m.statusMessage = "Generating config and testing Nginx..."
+				return m, m.GenerateAndDeployPipeline()
+			}
+		}
+
+		if m.focusInput {
+			var cmd tea.Cmd
+			m.domainInput, cmd = m.domainInput.Update(msg)
+			cmds = append(cmds, cmd)
+			m.setPreviewContent(m.renderTemplateString())
+		} else {
 			var tCmd tea.Cmd
 			m.table, tCmd = m.table.Update(msg)
 			if len(m.projects) > 0 {
 				idx := m.table.Cursor()
 				if idx >= 0 && idx < len(m.projects) {
 					m.selectedProj = &m.projects[idx]
-					m.previewVP.SetContent(m.renderTemplateString())
+					m.setPreviewContent(m.renderTemplateString())
 				}
 			}
-			return m, tCmd
-
-		case "s":
-			m.socketChoice = (m.socketChoice + 1) % len(m.availableSocks)
-			m.previewVP.SetContent(m.renderTemplateString())
-			return m, nil
-
-		case "g", "enter":
-			m.isGenerating = true
-			m.statusMessage = "Generating config and testing Nginx..."
-			return m, m.GenerateAndDeployPipeline()
-
-		case "r":
-			return m, m.ScanDirectory("/var/www")
+			if tCmd != nil {
+				cmds = append(cmds, tCmd)
+			}
 		}
-
-		var cmd tea.Cmd
-		m.domainInput, cmd = m.domainInput.Update(msg)
-		cmds = append(cmds, cmd)
-		m.previewVP.SetContent(m.renderTemplateString())
 	}
 
 	return m, tea.Batch(cmds...)
@@ -464,53 +510,61 @@ func (m *Model) updateLayout() {
 	m.previewVP.Height = vpHeight
 }
 
+func (m *Model) setPreviewContent(text string) {
+	w := m.previewVP.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.previewVP.SetContent(lipgloss.NewStyle().Width(w).Render(text))
+}
+
 func (m Model) View() string {
 	contentWidth := m.width - 4
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
 
-	domainBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorPrimary).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Server Domain: "),
-				m.domainInput.View(),
-				"   ",
-				theme.BadgeInfo.Render(fmt.Sprintf(" PHP Socket: %s [s] ", m.availableSocks[m.socketChoice])),
-			),
-		)
+	domainPrefix := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  Domain     ")
+	if m.focusInput {
+		domainPrefix = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Domain     ")
+	}
+
+	domainRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		domainPrefix,
+		m.domainInput.View(),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("PHP Socket: %s", m.availableSocks[m.socketChoice])),
+	)
 
 	statusLine := ""
 	if m.statusMessage != "" {
 		statusLine = lipgloss.NewStyle().
 			Foreground(theme.ColorHighlight).
-			Bold(true).
-			Render(m.statusMessage)
+			Render("  " + m.statusMessage)
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("⚡ SMART NGINX AUTO-TEMPLATER & FRAMEWORK DETECTOR"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[j/k: Select Project | s: Cycle PHP Socket | g/Enter: Generate & Deploy]"),
-		),
+	headerLine := lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Auto-Nginx Generator")
+
+	elements := []string{
+		headerLine,
 		"",
 		m.table.View(),
 		"",
-		domainBox,
-		statusLine,
+		domainRow,
+	}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements,
 		"",
-		theme.CardTitleStyle.Render("📄 GENERATED NGINX CONFIG PREVIEW"),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("Generated Config Preview"),
 		m.previewVP.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

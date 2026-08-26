@@ -141,6 +141,32 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.hashInput.Focus()
 			m.updateViewportContent()
 			return m, nil
+		case "shift+tab":
+			m.activeTab = (m.activeTab + 1) % 4
+			switch m.activeTab {
+			case TabJWT:
+				m.jwtInput.Focus()
+				m.cronInput.Blur()
+				m.b64Input.Blur()
+				m.hashInput.Blur()
+			case TabCron:
+				m.jwtInput.Blur()
+				m.cronInput.Focus()
+				m.b64Input.Blur()
+				m.hashInput.Blur()
+			case TabBase64:
+				m.jwtInput.Blur()
+				m.cronInput.Blur()
+				m.b64Input.Focus()
+				m.hashInput.Blur()
+			case TabHash:
+				m.jwtInput.Blur()
+				m.cronInput.Blur()
+				m.b64Input.Blur()
+				m.hashInput.Focus()
+			}
+			m.updateViewportContent()
+			return m, nil
 		}
 
 		var cmd tea.Cmd
@@ -313,7 +339,11 @@ func (m *Model) updateViewportContent() {
 		}
 	}
 
-	m.viewport.SetContent(sb.String())
+	wrapW := m.viewport.Width - 4
+	if wrapW < 20 {
+		wrapW = 20
+	}
+	m.viewport.SetContent(lipgloss.NewStyle().Width(wrapW).Render(sb.String()))
 }
 
 func (m Model) View() string {
@@ -351,35 +381,27 @@ func (m Model) View() string {
 		inputView = m.hashInput.View()
 	}
 
-	inputBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorPrimary).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render(inputLabel+" "),
-				inputView,
-			),
-		)
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🔪 DEVOPS SWISS ARMY KNIFE (CyberChef)"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[1-4: Switch Tool | Type in input to update]"),
-		),
-		"",
-		tabRow,
-		"",
-		inputBox,
-		"",
-		m.viewport.View(),
+	inputRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ "+inputLabel+" "),
+		inputView,
 	)
 
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("DevOps Swiss Knife"),
+		"   ",
+		tabRow,
+	)
+
+	elements := []string{
+		headerLine,
+		"",
+		inputRow,
+		"",
+		m.viewport.View(),
+	}
+
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
 }

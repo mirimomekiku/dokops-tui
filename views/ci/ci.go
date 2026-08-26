@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/go-github/v60/github"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -41,6 +42,7 @@ type Model struct {
 	repoInput    textinput.Model
 	table        table.Model
 	viewport     viewport.Model
+	actionMenu   actionmenu.Model
 	runs         []WorkflowRunItem
 	viewingRun   bool
 	activeRun    *WorkflowRunItem
@@ -210,9 +212,30 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "view":
+					if len(m.runs) > 0 {
+						idx := m.table.Cursor()
+						if idx >= 0 && idx < len(m.runs) {
+							m.activeRun = &m.runs[idx]
+							m.renderRunDetails()
+							m.viewingRun = true
+						}
+					}
+				case "refresh":
+					m.isLoading = true
+					return m, m.FetchWorkflowRuns()
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingRun {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingRun = false
 				return m, nil
 			default:
@@ -223,10 +246,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
+		case "space":
+			title := "GitHub Actions CI"
+			subtitle := "Select CI action"
+			if len(m.runs) > 0 {
+				idx := m.table.Cursor()
+				if idx >= 0 && idx < len(m.runs) {
+					title = fmt.Sprintf("Actions: Run #%d (%s)", m.runs[idx].ID, m.runs[idx].Name)
+					subtitle = fmt.Sprintf("Status: %s | Branch: %s", m.runs[idx].Conclusion, m.runs[idx].Branch)
+				}
+			}
+			items := []actionmenu.Item{
+				{Key: "view", Title: "View Run Details", Description: "Inspect run timing and commit metadata"},
+				{Key: "refresh", Title: "Refresh Runs", Description: "Re-poll GitHub API for latest status"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
 		case "enter":
-			m.isLoading = true
-			return m, m.FetchWorkflowRuns()
-		case "v":
 			if len(m.runs) > 0 {
 				idx := m.table.Cursor()
 				if idx >= 0 && idx < len(m.runs) {
@@ -235,9 +272,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					m.viewingRun = true
 				}
 			}
-		case "r":
-			m.isLoading = true
-			return m, m.FetchWorkflowRuns()
 		}
 
 		var cmd tea.Cmd
@@ -307,11 +341,17 @@ func (m *Model) updateTableRows() {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 12
-	if contentHeight < 6 {
-		contentHeight = 6
+	inputWidth := m.width - 24
+	if inputWidth < 30 {
+		inputWidth = 30
 	}
-	m.table.SetHeight(contentHeight)
+	m.repoInput.Width = inputWidth
+
+	tableHeight := m.height - 8
+	if tableHeight < 5 {
+		tableHeight = 5
+	}
+	m.table.SetHeight(tableHeight)
 
 	vpWidth := m.width - 8
 	if vpWidth < 40 {
@@ -334,55 +374,41 @@ func (m Model) View() string {
 	if m.viewingRun {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.JoinHorizontal(lipgloss.Center,
-				theme.BadgeInfo.Render(" WORKFLOW RUN DETAILS "),
+				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("Workflow Run Details"),
 				"   ",
-				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Back to runs list]"),
+				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc / q: Back to list"),
 			),
 			"",
 			m.viewport.View(),
 		)
 	}
 
-	repoBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorPrimary).
-		Padding(0, 1).
-		Render(
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("GitHub Repo: "),
-				m.repoInput.View(),
-				"  ",
-				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Enter: Search]"),
-			),
-		)
-
-	var statusBadge string
+	var statusText string
 	if m.isLoading {
-		statusBadge = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("⏳ Polling workflow runs from GitHub API...")
+		statusText = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Polling GitHub Actions API...")
 	} else if m.err != nil {
-		statusBadge = theme.BadgeDanger.Render(fmt.Sprintf(" API Error: %v ", m.err))
+		statusText = lipgloss.NewStyle().Foreground(theme.ColorDanger).Render(fmt.Sprintf("API error: %v", m.err))
 	} else {
-		statusBadge = theme.BadgeSuccess.Render(fmt.Sprintf(" %s (%d runs) ", m.activeRepo, len(m.runs)))
+		statusText = lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(%d runs)", len(m.runs)))
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🚀 GITHUB ACTIONS & CI RUNNER STATUS"),
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[v: View Run Details | r: Refresh]"),
-		),
-		"",
-		repoBox,
-		"",
-		statusBadge,
-		"",
-		m.table.View(),
+	repoRow := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Repo   "),
+		m.repoInput.View(),
+		"   ",
+		statusText,
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	elements := []string{
+		repoRow,
+		"",
+		m.table.View(),
+	}
+
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

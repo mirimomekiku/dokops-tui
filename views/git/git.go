@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/go-git/go-git/v5"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -51,6 +52,7 @@ type Model struct {
 	filesTable    table.Model
 	commitsTable  table.Model
 	diffViewport  viewport.Model
+	actionMenu    actionmenu.Model
 	viewingDiff   bool
 	activeDiff    string
 	actionStatus  string
@@ -258,7 +260,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case GitDiffMsg:
 		m.activeDiff = msg.FilePath
-		m.diffViewport.SetContent(msg.Diff)
+		m.setDiffContent(msg.Diff)
 		m.diffViewport.GotoTop()
 		m.viewingDiff = true
 
@@ -271,9 +273,40 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				idx := m.filesTable.Cursor()
+				switch action {
+				case "diff":
+					if len(m.files) > 0 && idx >= 0 && idx < len(m.files) {
+						cmds = append(cmds, m.FetchDiff(m.files[idx].Path))
+					}
+				case "stage":
+					if len(m.files) > 0 && idx >= 0 && idx < len(m.files) {
+						cmds = append(cmds, m.RunGitCommand("Stage File", "add", m.files[idx].Path))
+					}
+				case "unstage":
+					if len(m.files) > 0 && idx >= 0 && idx < len(m.files) {
+						cmds = append(cmds, m.RunGitCommand("Unstage File", "reset", "HEAD", "--", m.files[idx].Path))
+					}
+				case "stash":
+					cmds = append(cmds, m.RunGitCommand("Stash Changes", "stash"))
+				case "pop":
+					cmds = append(cmds, m.RunGitCommand("Pop Stash", "stash", "pop"))
+				case "pull":
+					cmds = append(cmds, m.RunGitCommand("Git Pull", "pull", "--ff-only"))
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchGitState())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingDiff {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingDiff = false
 				return m, nil
 			default:
@@ -284,7 +317,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "tab":
+		case "tab", "shift+tab":
 			m.focusCommits = !m.focusCommits
 			m.filesTable.Focus()
 			m.commitsTable.Focus()
@@ -295,37 +328,35 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "d", "enter":
+		case "space":
+			title := "Git Inspector"
+			subtitle := "Select Git action"
+			if !m.focusCommits && len(m.files) > 0 {
+				idx := m.filesTable.Cursor()
+				if idx >= 0 && idx < len(m.files) {
+					title = "Actions: " + m.files[idx].Path
+					subtitle = fmt.Sprintf("Status: %s (Staged: %t)", m.files[idx].Status, m.files[idx].Staged)
+				}
+			}
+			items := []actionmenu.Item{
+				{Key: "diff", Title: "View Diff", Description: "Show line-by-line diff of file"},
+				{Key: "stage", Title: "Stage File", Description: "git add file"},
+				{Key: "unstage", Title: "Unstage File", Description: "git reset HEAD file"},
+				{Key: "stash", Title: "Stash Changes", Description: "git stash working tree"},
+				{Key: "pop", Title: "Pop Stash", Description: "git stash pop last stash"},
+				{Key: "pull", Title: "Pull Changes", Description: "git pull --ff-only"},
+				{Key: "refresh", Title: "Refresh Repository", Description: "Reload git status and commit log"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if !m.focusCommits && len(m.files) > 0 {
 				idx := m.filesTable.Cursor()
 				if idx >= 0 && idx < len(m.files) {
 					cmds = append(cmds, m.FetchDiff(m.files[idx].Path))
 				}
 			}
-
-		case "s":
-			if !m.focusCommits && len(m.files) > 0 {
-				idx := m.filesTable.Cursor()
-				if idx >= 0 && idx < len(m.files) {
-					cmds = append(cmds, m.RunGitCommand("Stage File", "add", m.files[idx].Path))
-				}
-			}
-
-		case "u":
-			if !m.focusCommits && len(m.files) > 0 {
-				idx := m.filesTable.Cursor()
-				if idx >= 0 && idx < len(m.files) {
-					cmds = append(cmds, m.RunGitCommand("Unstage File", "reset", "HEAD", "--", m.files[idx].Path))
-				}
-			}
-
-		case "z":
-			cmds = append(cmds, m.RunGitCommand("Stash Changes", "stash"))
-		case "Z":
-			cmds = append(cmds, m.RunGitCommand("Pop Stash", "stash", "pop"))
-		case "r":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchGitState())
 		}
 	}
 
@@ -382,6 +413,14 @@ func (m *Model) updateLayout() {
 	m.commitsTable.SetHeight(tableH)
 }
 
+func (m *Model) setDiffContent(text string) {
+	w := m.diffViewport.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.diffViewport.SetContent(lipgloss.NewStyle().Width(w).Render(text))
+}
+
 func (m Model) View() string {
 	contentWidth := m.width - 4
 	if contentWidth < 40 {
@@ -390,27 +429,16 @@ func (m Model) View() string {
 
 	if m.err != nil {
 		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorDanger).
+			Foreground(theme.ColorDanger).
 			Padding(1, 2).
-			Width(contentWidth).
-			Render(
-				lipgloss.JoinVertical(
-					lipgloss.Left,
-					theme.BadgeDanger.Render(" GIT ERROR "),
-					"",
-					lipgloss.NewStyle().Foreground(theme.ColorText).Bold(true).Render(fmt.Sprintf("%v", m.err)),
-				),
-			)
+			Render(fmt.Sprintf("Git error: %v", m.err))
 	}
 
 	if m.viewingDiff {
 		diffHeader := lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.BadgeInfo.Render(" GIT DIFF "),
-			" ",
-			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(m.activeDiff),
+			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("diff: "+m.activeDiff),
 			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Close | j/k: Scroll]"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc: close  j/k: scroll"),
 		)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			diffHeader,
@@ -419,44 +447,48 @@ func (m Model) View() string {
 		)
 	}
 
-	branchBadge := theme.BadgeSuccess.Render(fmt.Sprintf("  %s ", m.branch))
-
-	statusLine := ""
+	// Branch badge + status
+	branchLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("branch: "),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSuccess).Render(m.branch),
+	)
 	if m.actionStatus != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.actionStatus)
+		branchLine = lipgloss.JoinHorizontal(lipgloss.Center,
+			branchLine,
+			"   ",
+			lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.actionStatus),
+		)
 	}
 
-	filesTitle := theme.CardTitleStyle.Render("📁 MODIFIED & UNTRACKED FILES")
+	hintLine := lipgloss.NewStyle().Foreground(theme.ColorMuted).
+		Render("Tab: switch panes  Enter: diff  Space: actions")
+
+	// Pane labels — show focus indicator simply
+	filesLabel := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Changed files")
 	if !m.focusCommits {
-		filesTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("📁 MODIFIED & UNTRACKED FILES (Focused)")
+		filesLabel = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Changed files")
 	}
 
-	commitsTitle := theme.CardTitleStyle.Render("📜 RECENT COMMITS")
+	commitsLabel := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Recent commits")
 	if m.focusCommits {
-		commitsTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("📜 RECENT COMMITS (Focused)")
+		commitsLabel = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Recent commits")
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🌱 GIT MINI-INSPECTOR (lazygit lite)"),
-			"   ",
-			branchBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch Files/Commits | d: Diff | s: Stage | u: Unstage | z: Stash]"),
-		),
-		statusLine,
+		branchLine,
+		hintLine,
 		"",
-		filesTitle,
+		filesLabel,
 		m.filesTable.View(),
 		"",
-		commitsTitle,
+		commitsLabel,
 		m.commitsTable.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
 		Render(body)
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -48,6 +49,7 @@ type Model struct {
 	sites          []NginxSite
 	table          table.Model
 	configViewport viewport.Model
+	actionMenu     actionmenu.Model
 	viewingConfig  bool
 	activeConfig   string
 	activeSiteName string
@@ -362,9 +364,45 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				sel := m.getSelectedSite()
+				switch action {
+				case "view":
+					if sel != nil {
+						content, err := os.ReadFile(sel.Path)
+						if err != nil {
+							m.activeConfig = fmt.Sprintf("Error reading %s: %v", sel.Path, err)
+						} else {
+							m.activeConfig = string(content)
+						}
+						m.activeSiteName = sel.Name
+						m.configViewport.SetContent(m.activeConfig)
+						m.configViewport.GotoTop()
+						m.viewingConfig = true
+					}
+				case "toggle":
+					if sel != nil {
+						cmds = append(cmds, m.ToggleSite(*sel))
+					}
+				case "test":
+					m.actionStatus = "Running `nginx -t`..."
+					cmds = append(cmds, m.TestSyntax())
+				case "reload":
+					m.actionStatus = "Reloading Nginx..."
+					cmds = append(cmds, m.ReloadNginx())
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchSites())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingConfig {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingConfig = false
 				return m, nil
 			default:
@@ -375,21 +413,30 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "e", " ":
+		case "space":
 			sel := m.getSelectedSite()
+			title := "Nginx VHost Manager"
+			subtitle := "Select an action"
 			if sel != nil {
-				cmds = append(cmds, m.ToggleSite(*sel))
+				statusStr := "Disabled"
+				if sel.Enabled {
+					statusStr = "Enabled"
+				}
+				title = fmt.Sprintf("Actions: %s (%s)", sel.Name, statusStr)
+				subtitle = fmt.Sprintf("Domain: %s | Port: %s", sel.ServerName, sel.ListenPort)
 			}
-		case "t":
-			m.actionStatus = "Running `nginx -t`..."
-			cmds = append(cmds, m.TestSyntax())
-		case "r":
-			m.actionStatus = "Reloading Nginx..."
-			cmds = append(cmds, m.ReloadNginx())
-		case "R":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchSites())
-		case "v", "enter":
+			items := []actionmenu.Item{
+				{Key: "view", Title: "View Configuration", Description: "Read nginx vhost file content"},
+				{Key: "toggle", Title: "Toggle Enable / Disable", Description: "Symlink/unlink from sites-enabled"},
+				{Key: "test", Title: "Test Syntax (nginx -t)", Description: "Verify configuration validity"},
+				{Key: "reload", Title: "Reload Nginx Daemon", Description: "Apply changes without dropping connections"},
+				{Key: "refresh", Title: "Refresh Sites", Description: "Rescan /etc/nginx/sites-available"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
+			// Primary action: View Configuration
 			sel := m.getSelectedSite()
 			if sel != nil {
 				content, err := os.ReadFile(sel.Path)
@@ -402,6 +449,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.configViewport.SetContent(m.activeConfig)
 				m.configViewport.GotoTop()
 				m.viewingConfig = true
+				return m, nil
 			}
 		}
 	}
@@ -416,7 +464,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 12
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -458,11 +506,9 @@ func (m Model) View() string {
 
 	if m.viewingConfig {
 		configHeader := lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.BadgeInfo.Render(" NGINX CONFIG FILE "),
-			" ",
-			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(m.activeSiteName),
+			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("Config: "+m.activeSiteName),
 			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Close | j/k: Scroll]"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc / q: Close  j/k: Scroll"),
 		)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			configHeader,
@@ -473,19 +519,15 @@ func (m Model) View() string {
 
 	if m.nginxMissing && len(m.sites) == 0 {
 		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorWarning).
+			Foreground(theme.ColorWarning).
 			Padding(1, 2).
-			Width(contentWidth).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Left,
-					theme.BadgeWarning.Render(" NGINX NOT DETECTED "),
+					lipgloss.NewStyle().Bold(true).Foreground(theme.ColorWarning).Render("Nginx not detected"),
 					"",
-					lipgloss.NewStyle().Foreground(theme.ColorText).Bold(true).Render("No Nginx installation found at /etc/nginx or permission denied."),
-					lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Ensure Nginx is installed (`sudo apt install nginx` or `nginx -V`) and readable."),
-					"",
-					lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Press [R] to rescan directory."),
+					lipgloss.NewStyle().Foreground(theme.ColorText).Render("No Nginx installation found at /etc/nginx or permission denied."),
+					lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Ensure Nginx is installed (`sudo apt install nginx` or `nginx -V`)."),
 				),
 			)
 	}
@@ -493,9 +535,9 @@ func (m Model) View() string {
 	// Syntax test banner
 	var syntaxBadge string
 	if m.syntaxOK {
-		syntaxBadge = theme.BadgeSuccess.Render(" nginx -t: OK ")
+		syntaxBadge = lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render("nginx -t: OK")
 	} else {
-		syntaxBadge = theme.BadgeDanger.Render(" nginx -t: SYNTAX ERROR ")
+		syntaxBadge = lipgloss.NewStyle().Foreground(theme.ColorDanger).Bold(true).Render("nginx -t: syntax error")
 	}
 
 	var enabledCount, disabledCount int
@@ -507,10 +549,12 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Enabled ", enabledCount)),
-		" ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" %d Disabled ", disabledCount)),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Virtual Hosts"),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %d enabled", enabledCount)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("○ %d disabled", disabledCount)),
 		"   ",
 		syntaxBadge,
 	)
@@ -520,28 +564,16 @@ func (m Model) View() string {
 		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.actionStatus)
 	}
 
-	var syntaxDetails string
-	if m.syntaxStatus != "" {
-		syntaxDetails = lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("Test Output: %s", m.syntaxStatus))
+	elements := []string{headerLine}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
 	}
+	elements = append(elements, "", m.table.View())
 
-	hintBar := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(
-		"[e/Space: Toggle Enable/Disable]  [t: Test Syntax (nginx -t)]  [r: Reload]  [v/Enter: View Config]  [R: Refresh]",
-	)
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center, theme.CardTitleStyle.Render("🌐 NGINX SITE MANAGER & SYNTAX VERIFIER"), "  ", statsBadge),
-		hintBar,
-		syntaxDetails,
-		statusLine,
-		"",
-		m.table.View(),
-	)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

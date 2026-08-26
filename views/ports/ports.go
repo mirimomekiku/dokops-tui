@@ -3,6 +3,7 @@ package ports
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"syscall"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -11,6 +12,7 @@ import (
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -33,6 +35,7 @@ type Model struct {
 	sockets         []SocketItem
 	filteredSockets []SocketItem
 	table           table.Model
+	actionMenu      actionmenu.Model
 	listenOnly      bool
 	protoFilter     string // "ALL", "TCP", "UDP"
 	confirmKill     bool
@@ -236,9 +239,42 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				sel := m.getSelectedSocket()
+				switch action {
+				case "kill":
+					if sel != nil && sel.PID > 0 {
+						m.killPID = sel.PID
+						m.killProcName = sel.ProcessName
+						m.confirmKill = true
+					} else {
+						m.killStatus = "Selected socket has no associated PID"
+					}
+				case "toggle_listen":
+					m.listenOnly = !m.listenOnly
+					m.applyFilter()
+				case "filter_tcp":
+					m.protoFilter = "TCP"
+					m.applyFilter()
+				case "filter_udp":
+					m.protoFilter = "UDP"
+					m.applyFilter()
+				case "filter_all":
+					m.protoFilter = "ALL"
+					m.applyFilter()
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchSockets())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.confirmKill {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				if m.killPID > 0 {
 					err := syscall.Kill(int(m.killPID), syscall.SIGTERM)
 					if err != nil {
@@ -249,7 +285,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 				m.confirmKill = false
-			case "n", "N", "esc":
+			case "n", "N", "esc", "space":
 				m.confirmKill = false
 				m.killStatus = "Kill cancelled"
 			}
@@ -257,34 +293,29 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "l":
-			m.listenOnly = !m.listenOnly
-			m.applyFilter()
-		case "t":
-			if m.protoFilter == "TCP" {
-				m.protoFilter = "ALL"
-			} else {
-				m.protoFilter = "TCP"
-			}
-			m.applyFilter()
-		case "u":
-			if m.protoFilter == "UDP" {
-				m.protoFilter = "ALL"
-			} else {
-				m.protoFilter = "UDP"
-			}
-			m.applyFilter()
-		case "r", "R":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchSockets())
-		case "k":
+		case "space":
 			sel := m.getSelectedSocket()
-			if sel != nil && sel.PID > 0 {
-				m.killPID = sel.PID
-				m.killProcName = sel.ProcessName
-				m.confirmKill = true
-			} else {
-				m.killStatus = "Selected socket has no associated PID or permission denied"
+			title := "Listening Ports"
+			subtitle := "Select an action"
+			if sel != nil {
+				title = fmt.Sprintf("Actions: Port %d (%s)", sel.LocalPort, sel.Protocol)
+				subtitle = fmt.Sprintf("Process: %s (PID %d)", sel.ProcessName, sel.PID)
+			}
+			items := []actionmenu.Item{
+				{Key: "kill", Title: "Kill Process (Free Port)", Description: "Terminate process holding this port"},
+				{Key: "toggle_listen", Title: "Toggle Listen / All", Description: "Switch between listening & active sockets"},
+				{Key: "filter_tcp", Title: "Filter: TCP Only", Description: "Display TCP sockets"},
+				{Key: "filter_udp", Title: "Filter: UDP Only", Description: "Display UDP sockets"},
+				{Key: "filter_all", Title: "Filter: All Protocols", Description: "Display TCP and UDP sockets"},
+				{Key: "refresh", Title: "Refresh Sockets", Description: "Rescan network connections"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
+			sel := m.getSelectedSocket()
+			if sel != nil {
+				m.killStatus = fmt.Sprintf("Selected Port %d (%s) -> %s (PID: %d)", sel.LocalPort, sel.Protocol, sel.ProcessName, sel.PID)
 			}
 		}
 	}
@@ -299,26 +330,40 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 10
-	if contentHeight < 6 {
-		contentHeight = 6
+	// Reserve: card border(2) + stats bar(1) + hint bar(1) + status(1) + table header(1) + padding(2) = 8
+	contentHeight := m.height - 8
+	if contentHeight < 4 {
+		contentHeight = 4
 	}
 	m.table.SetHeight(contentHeight)
 
 	availableWidth := m.width - 6
-	if availableWidth > 80 {
-		procWidth := availableWidth - (8 + 18 + 8 + 14 + 22 + 8 + 10)
-		if procWidth < 20 {
-			procWidth = 20
+	if availableWidth > 0 {
+		// Fixed cols: PROTO(6) PORT(6) STATUS(12) PID(6) = 30; remainder split between LOCAL, REMOTE, PROCESS
+		remainder := availableWidth - 30
+		if remainder < 30 {
+			remainder = 30
+		}
+		localW := remainder / 3
+		remoteW := remainder / 3
+		procW := remainder - localW - remoteW
+		if localW < 14 {
+			localW = 14
+		}
+		if remoteW < 14 {
+			remoteW = 14
+		}
+		if procW < 14 {
+			procW = 14
 		}
 		cols := []table.Column{
-			{Title: "PROTO", Width: 8},
-			{Title: "LOCAL ADDRESS", Width: 18},
-			{Title: "PORT", Width: 8},
-			{Title: "STATUS", Width: 14},
-			{Title: "REMOTE ADDRESS", Width: 22},
-			{Title: "PID", Width: 8},
-			{Title: "PROCESS NAME", Width: procWidth},
+			{Title: "PROTO", Width: 6},
+			{Title: "LOCAL", Width: localW},
+			{Title: "PORT", Width: 6},
+			{Title: "STATUS", Width: 12},
+			{Title: "REMOTE", Width: remoteW},
+			{Title: "PID", Width: 6},
+			{Title: "PROCESS", Width: procW},
 		}
 		m.table.SetColumns(cols)
 	}
@@ -330,30 +375,28 @@ func (m Model) View() string {
 		contentWidth = 40
 	}
 
-	listenLabel := "LISTEN ONLY [l]"
-	if !m.listenOnly {
-		listenLabel = "ALL SOCKETS [l]"
-	}
-
-	var listeningCount, establishedCount int
+	var tcpCount, udpCount, listenCount int
 	for _, s := range m.sockets {
-		if s.Status == "LISTEN" || s.Protocol == "UDP" {
-			listeningCount++
-		} else if s.Status == "ESTABLISHED" {
-			establishedCount++
+		if strings.HasPrefix(strings.ToLower(s.Protocol), "tcp") {
+			tcpCount++
+		} else {
+			udpCount++
+		}
+		if s.Status == "LISTEN" {
+			listenCount++
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Listening Ports ", listeningCount)),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Established ", establishedCount)),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Ports & Sockets"),
 		"   ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" View: %s ", listenLabel)),
-		" ",
-		theme.BadgeSecondary.Render(fmt.Sprintf(" Proto: %s [t/u] ", m.protoFilter)),
-		" ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(Showing %d of %d sockets)", len(m.filteredSockets), len(m.sockets))),
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("listening: %d", listenCount)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("TCP: %d", tcpCount)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorWarning).Render(fmt.Sprintf("UDP: %d", udpCount)),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(total: %d)", len(m.sockets))),
 	)
 
 	statusLine := ""
@@ -363,27 +406,23 @@ func (m Model) View() string {
 			Background(theme.ColorDanger).
 			Bold(true).
 			Padding(0, 1).
-			Render(fmt.Sprintf("⚠️ Terminate PID %d (%s) to release port? (y/N)", m.killPID, m.killProcName))
+			Render(fmt.Sprintf("Terminate PID %d (%s) to release port? (y/N)", m.killPID, m.killProcName))
 	} else if m.killStatus != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.killStatus)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.killStatus)
 	}
 
-	hintBar := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(
-		"[k: Kill Process / Free Port]  [l: Toggle Listen/All]  [t: Filter TCP]  [u: Filter UDP]  [r: Refresh]",
-	)
+	elements := []string{
+		headerLine,
+	}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center, theme.CardTitleStyle.Render("🔌 LISTENING PORTS & PROCESS MAPPER (ss / lsof)"), "  ", statsBadge),
-		hintBar,
-		statusLine,
-		"",
-		m.table.View(),
-	)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

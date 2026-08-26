@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -37,6 +38,7 @@ type Model struct {
 	containers     []types.Container
 	table          table.Model
 	logsViewport   viewport.Model
+	actionMenu     actionmenu.Model
 	viewingLogs    bool
 	activeLogID    string
 	activeLogName  string
@@ -244,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateTableRows()
 
 	case LogsStreamedMsg:
-		m.logsViewport.SetContent(msg.Logs)
+		m.setLogContent(msg.Logs)
 		m.logsViewport.GotoBottom()
 
 	case ActionCompleteMsg:
@@ -256,9 +258,50 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Handle Action Menu if active
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				sel := m.getSelectedContainer()
+				if sel != nil {
+					switch action {
+					case "start":
+						m.actionStatus = fmt.Sprintf("Starting container %s...", sel.ID[:12])
+						cmds = append(cmds, m.PerformAction(sel.ID, "start"))
+					case "stop":
+						m.actionStatus = fmt.Sprintf("Stopping container %s...", sel.ID[:12])
+						cmds = append(cmds, m.PerformAction(sel.ID, "stop"))
+					case "restart":
+						m.actionStatus = fmt.Sprintf("Restarting container %s...", sel.ID[:12])
+						cmds = append(cmds, m.PerformAction(sel.ID, "restart"))
+					case "logs":
+						m.viewingLogs = true
+						m.activeLogID = sel.ID
+						name := sel.ID[:12]
+						if len(sel.Names) > 0 {
+							name = strings.TrimPrefix(sel.Names[0], "/")
+						}
+						m.activeLogName = name
+						m.logsViewport.SetContent("Loading logs...")
+						cmds = append(cmds, m.FetchLogs(sel.ID))
+					case "remove":
+						m.deleteTargetID = sel.ID
+						m.confirmDelete = true
+					case "refresh":
+						m.loading = true
+						cmds = append(cmds, m.FetchContainers())
+					}
+				} else if action == "refresh" {
+					m.loading = true
+					cmds = append(cmds, m.FetchContainers())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingLogs {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingLogs = false
 				return m, nil
 			default:
@@ -270,10 +313,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		if m.confirmDelete {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				cmds = append(cmds, m.PerformAction(m.deleteTargetID, "remove"))
 				m.confirmDelete = false
-			case "n", "N", "esc":
+			case "n", "N", "esc", "space":
 				m.confirmDelete = false
 				m.actionStatus = "Remove cancelled"
 			}
@@ -281,31 +324,31 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "R", "r":
-			// 'r' is restart if container selected, Shift+R for refresh list
-			if msg.String() == "r" {
-				sel := m.getSelectedContainer()
-				if sel != nil {
-					m.actionStatus = fmt.Sprintf("Restarting container %s...", sel.ID[:12])
-					cmds = append(cmds, m.PerformAction(sel.ID, "restart"))
+		case "space":
+			sel := m.getSelectedContainer()
+			title := "Docker Containers"
+			subtitle := "Select an action to execute"
+			if sel != nil {
+				name := sel.ID[:12]
+				if len(sel.Names) > 0 {
+					name = strings.TrimPrefix(sel.Names[0], "/")
 				}
-			} else {
-				m.loading = true
-				cmds = append(cmds, m.FetchContainers())
+				title = "Actions: " + name
+				subtitle = fmt.Sprintf("Status: %s (%s)", sel.State, sel.Status)
 			}
-		case "u", "enter":
-			sel := m.getSelectedContainer()
-			if sel != nil {
-				m.actionStatus = fmt.Sprintf("Starting container %s...", sel.ID[:12])
-				cmds = append(cmds, m.PerformAction(sel.ID, "start"))
+			items := []actionmenu.Item{
+				{Key: "logs", Title: "Stream Logs", Description: "View real-time stdout/stderr"},
+				{Key: "start", Title: "Start Container", Description: "Start stopped container instance"},
+				{Key: "stop", Title: "Stop Container", Description: "Gracefully stop container"},
+				{Key: "restart", Title: "Restart Container", Description: "Restart container instance"},
+				{Key: "remove", Title: "Delete Container", Description: "Force remove container", Danger: true},
+				{Key: "refresh", Title: "Refresh List", Description: "Fetch container states"},
 			}
-		case "s":
-			sel := m.getSelectedContainer()
-			if sel != nil {
-				m.actionStatus = fmt.Sprintf("Stopping container %s...", sel.ID[:12])
-				cmds = append(cmds, m.PerformAction(sel.ID, "stop"))
-			}
-		case "l":
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
+			// Primary action: Stream logs
 			sel := m.getSelectedContainer()
 			if sel != nil {
 				m.viewingLogs = true
@@ -317,12 +360,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.activeLogName = name
 				m.logsViewport.SetContent("Loading logs...")
 				cmds = append(cmds, m.FetchLogs(sel.ID))
-			}
-		case "d":
-			sel := m.getSelectedContainer()
-			if sel != nil {
-				m.deleteTargetID = sel.ID
-				m.confirmDelete = true
 			}
 		}
 	}
@@ -378,7 +415,7 @@ func (m *Model) updateTableRows() {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 10
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -413,6 +450,14 @@ func (m *Model) updateLayout() {
 	m.logsViewport.Height = vpHeight
 }
 
+func (m *Model) setLogContent(text string) {
+	w := m.logsViewport.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.logsViewport.SetContent(lipgloss.NewStyle().Width(w).Render(text))
+}
+
 func (m Model) View() string {
 	contentWidth := m.width - 4
 	if contentWidth < 40 {
@@ -421,20 +466,17 @@ func (m Model) View() string {
 
 	if m.dockerOffline {
 		errorCard := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorDanger).
+			Foreground(theme.ColorDanger).
 			Padding(1, 2).
-			Width(contentWidth).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Left,
-					theme.BadgeDanger.Render(" DOCKER DAEMON OFFLINE "),
+					lipgloss.NewStyle().Bold(true).Foreground(theme.ColorDanger).Render("Docker daemon offline"),
 					"",
-					lipgloss.NewStyle().Foreground(theme.ColorText).Bold(true).Render("Cannot connect to Docker daemon socket (/var/run/docker.sock)."),
+					lipgloss.NewStyle().Foreground(theme.ColorText).Render("Cannot connect to Docker daemon socket (/var/run/docker.sock)."),
 					lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("Details: %v", m.err)),
 					"",
-					lipgloss.NewStyle().Foreground(theme.ColorInfo).Render("💡 Tips: Ensure Docker is running (`sudo systemctl start docker` or launch Docker Desktop)"),
-					lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("Press [R] to retry connection."),
+					lipgloss.NewStyle().Foreground(theme.ColorInfo).Render("Tip: Ensure Docker is running (`sudo systemctl start docker`)"),
 				),
 			)
 		return errorCard
@@ -442,12 +484,10 @@ func (m Model) View() string {
 
 	if m.viewingLogs {
 		logsHeader := lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.BadgeInfo.Render(" DOCKER LOGS "),
-			" ",
-			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(m.activeLogName),
+			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("Logs: "+m.activeLogName),
 			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf(" (%s)", m.activeLogID[:min(12, len(m.activeLogID))])),
 			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Close | j/k: Scroll]"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc / q: Close log viewer"),
 		)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			logsHeader,
@@ -469,14 +509,16 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Running ", running)),
-		" ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" %d Paused ", paused)),
-		" ",
-		theme.BadgeDanger.Render(fmt.Sprintf(" %d Stopped ", stopped)),
+	statusHeader := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Containers"),
 		"   ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("Total: %d containers", len(m.containers))),
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("running: %d", running)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorWarning).Render(fmt.Sprintf("paused: %d", paused)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("stopped: %d", stopped)),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(total: %d)", len(m.containers))),
 	)
 
 	statusLine := ""
@@ -486,27 +528,21 @@ func (m Model) View() string {
 			Background(theme.ColorDanger).
 			Bold(true).
 			Padding(0, 1).
-			Render(fmt.Sprintf("⚠️ Force remove container %s? (y/N)", m.deleteTargetID[:min(12, len(m.deleteTargetID))]))
+			Render(fmt.Sprintf("Force remove container %s? (y/N)", m.deleteTargetID[:min(12, len(m.deleteTargetID))]))
 	} else if m.actionStatus != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render(m.actionStatus)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.actionStatus)
 	}
 
-	hintBar := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(
-		"[u/Enter: Start]  [s: Stop]  [r: Restart]  [l: Logs]  [d: Remove]  [R: Refresh]",
-	)
+	elements := []string{statusHeader}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center, theme.CardTitleStyle.Render("🐳 DOCKER CONTAINERS"), "  ", statsBadge),
-		hintBar,
-		statusLine,
-		"",
-		m.table.View(),
-	)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

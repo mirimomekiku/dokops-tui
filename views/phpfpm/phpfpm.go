@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -37,6 +38,7 @@ type PHPActionMsg struct {
 type Model struct {
 	versions     []PHPVersionInfo
 	table        table.Model
+	actionMenu   actionmenu.Model
 	statusLine   string
 	selectedVer  *PHPVersionInfo
 	isLoading    bool
@@ -140,7 +142,7 @@ func (m Model) RestartPHPService(service string) tea.Cmd {
 				return PHPActionMsg{Action: "Restart", Output: fmt.Sprintf("Failed to restart %s: %v (%s)", service, err, string(out)), Err: err}
 			}
 		}
-		return PHPActionMsg{Action: "Restart", Output: fmt.Sprintf("✓ Successfully restarted %s daemon!", service)}
+		return PHPActionMsg{Action: "Restart", Output: fmt.Sprintf("Successfully restarted %s daemon", service)}
 	}
 }
 
@@ -150,7 +152,7 @@ func (m Model) ResetOPcache() tea.Cmd {
 		if err != nil {
 			return PHPActionMsg{Action: "OPcache Reset", Output: fmt.Sprintf("OPcache reset error: %v", err), Err: err}
 		}
-		return PHPActionMsg{Action: "OPcache Reset", Output: fmt.Sprintf("✓ %s", strings.TrimSpace(string(out)))}
+		return PHPActionMsg{Action: "OPcache Reset", Output: fmt.Sprintf("%s", strings.TrimSpace(string(out)))}
 	}
 }
 
@@ -176,6 +178,25 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		cmds = append(cmds, m.FetchPHPData())
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "restart":
+					if m.selectedVer != nil {
+						m.statusLine = fmt.Sprintf("Restarting %s...", m.selectedVer.Service)
+						return m, m.RestartPHPService(m.selectedVer.Service)
+					}
+				case "opcache":
+					m.statusLine = "Flushing OPcache & APCu cache..."
+					return m, m.ResetOPcache()
+				case "refresh":
+					return m, m.FetchPHPData()
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "up", "down", "j", "k":
 			var tCmd tea.Cmd
@@ -188,18 +209,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, tCmd
 
-		case "r", "enter":
+		case "space":
+			title := "PHP-FPM Manager"
+			subtitle := "Select PHP action"
+			if m.selectedVer != nil {
+				title = fmt.Sprintf("Actions: PHP %s (%s)", m.selectedVer.Version, m.selectedVer.Service)
+				subtitle = fmt.Sprintf("Socket: %s | Status: %s", m.selectedVer.SocketPath, m.selectedVer.Status)
+			}
+			items := []actionmenu.Item{
+				{Key: "restart", Title: "Restart PHP Daemon", Description: "Restart systemd php-fpm service"},
+				{Key: "opcache", Title: "Flush OPcache & APCu", Description: "Reset opcode and user cache"},
+				{Key: "refresh", Title: "Refresh Sockets", Description: "Rescan /run/php/ sockets"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if m.selectedVer != nil {
 				m.statusLine = fmt.Sprintf("Restarting %s...", m.selectedVer.Service)
 				return m, m.RestartPHPService(m.selectedVer.Service)
 			}
-
-		case "c":
-			m.statusLine = "Flushing OPcache & APCu cache..."
-			return m, m.ResetOPcache()
-
-		case "R":
-			return m, m.FetchPHPData()
 		}
 	}
 
@@ -226,7 +255,7 @@ func (m *Model) updateTableRows() {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 12
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -246,40 +275,33 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Installed PHP Versions ", len(m.versions))),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Running Daemons ", activeCount)),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("PHP-FPM Pools"),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %d running", activeCount)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(%d installed)", len(m.versions))),
 	)
 
 	statusLine := ""
 	if m.statusLine != "" {
 		statusLine = lipgloss.NewStyle().
 			Foreground(theme.ColorHighlight).
-			Bold(true).
-			Render(m.statusLine)
+			Render("  " + m.statusLine)
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🐘 PHP-FPM POOL & VERSION SWITCHER"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[r/Enter: Restart FPM Daemon | c: Clear OPcache | R: Refresh]"),
-		),
-		"",
-		m.table.View(),
-		"",
-		statusLine,
-		"",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Tip: FastCGI sockets are automatically wired when deploying Nginx configs in the Auto-Templater tab."),
-	)
+	elements := []string{
+		headerLine,
+	}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements, "", m.table.View())
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

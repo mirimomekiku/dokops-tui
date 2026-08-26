@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/robfig/cron/v3"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -45,6 +46,7 @@ type Model struct {
 	tasks         []ScheduledTask
 	filteredTasks []ScheduledTask
 	table         table.Model
+	actionMenu    actionmenu.Model
 	filter        FilterMode
 	isLoading     bool
 	width         int
@@ -285,13 +287,39 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "filter_all":
+					m.filter = FilterAll
+					m.applyFilter()
+				case "filter_cron":
+					m.filter = FilterCronOnly
+					m.applyFilter()
+				case "filter_systemd":
+					m.filter = FilterSystemdOnly
+					m.applyFilter()
+				case "refresh":
+					m.isLoading = true
+					cmds = append(cmds, m.FetchScheduledTasks())
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
-		case "f":
-			m.filter = (m.filter + 1) % 3
-			m.applyFilter()
-		case "r", "R":
-			m.isLoading = true
-			cmds = append(cmds, m.FetchScheduledTasks())
+		case "space":
+			title := "Scheduled Timers & Cron"
+			subtitle := "Select filter or action"
+			items := []actionmenu.Item{
+				{Key: "filter_all", Title: "Filter: All Tasks", Description: "Show cron jobs and systemd timers"},
+				{Key: "filter_cron", Title: "Filter: Crontabs Only", Description: "Show user & system crontabs"},
+				{Key: "filter_systemd", Title: "Filter: Systemd Timers Only", Description: "Show systemd timer units"},
+				{Key: "refresh", Title: "Refresh Timeline", Description: "Recalculate countdowns and schedules"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
 		}
 	}
 
@@ -305,7 +333,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) updateLayout() {
-	contentHeight := m.height - 10
+	contentHeight := m.height - 6
 	if contentHeight < 6 {
 		contentHeight = 6
 	}
@@ -344,40 +372,34 @@ func (m Model) View() string {
 		}
 	}
 
-	filterName := "ALL TASKS"
+	filterName := "all"
 	switch m.filter {
 	case FilterCronOnly:
-		filterName = "CRONTABS ONLY"
+		filterName = "crons only"
 	case FilterSystemdOnly:
-		filterName = "SYSTEMD TIMERS ONLY"
+		filterName = "systemd timers only"
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Cron Jobs ", cronCount)),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Systemd Timers ", timerCount)),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Scheduled Tasks"),
 		"   ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" Filter: %s [f] ", filterName)),
-		" ",
-		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(Showing %d of %d tasks)", len(m.filteredTasks), len(m.tasks))),
+		lipgloss.NewStyle().Foreground(theme.ColorSuccess).Render(fmt.Sprintf("● %d cron jobs", cronCount)),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorInfo).Render(fmt.Sprintf("○ %d systemd timers", timerCount)),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("filter: %s (showing %d of %d)", filterName, len(m.filteredTasks), len(m.tasks))),
 	)
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("⏰ CRON & SYSTEMD TIMERS TIMELINE"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[f: Cycle Filter | r: Refresh]"),
-		),
+		headerLine,
 		"",
 		m.table.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
 		Render(body)
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

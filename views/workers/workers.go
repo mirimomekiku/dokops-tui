@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -42,18 +43,19 @@ type WorkerActionMsg struct {
 }
 
 type Model struct {
-	workers       []WorkerProcess
-	tasks         []ScheduledArtisanTask
-	workersTable  table.Model
-	tasksTable    table.Model
-	logViewport   viewport.Model
-	viewingLog    bool
-	focusTasks    bool
-	statusMessage string
+	workers        []WorkerProcess
+	tasks          []ScheduledArtisanTask
+	workersTable   table.Model
+	tasksTable     table.Model
+	logViewport    viewport.Model
+	actionMenu     actionmenu.Model
+	viewingLog     bool
+	focusTasks     bool
+	statusMessage  string
 	selectedWorker *WorkerProcess
-	width         int
-	height        int
-	err           error
+	width          int
+	height         int
+	err            error
 }
 
 func New() Model {
@@ -203,7 +205,7 @@ func (m Model) RestartWorker(name string) tea.Cmd {
 		if err != nil {
 			return WorkerActionMsg{Action: "Restart", Output: fmt.Sprintf("Restart failed: %v (%s)", err, string(out)), Err: err}
 		}
-		return WorkerActionMsg{Action: "Restart", Output: fmt.Sprintf("✓ Successfully restarted worker %s!", name)}
+		return WorkerActionMsg{Action: "Restart", Output: fmt.Sprintf("Successfully restarted worker %s", name)}
 	}
 }
 
@@ -229,9 +231,38 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		cmds = append(cmds, m.FetchWorkersAndSchedule())
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "restart":
+					if !m.focusTasks && m.selectedWorker != nil {
+						m.statusMessage = fmt.Sprintf("Restarting worker %s...", m.selectedWorker.Name)
+						return m, m.RestartWorker(m.selectedWorker.Name)
+					}
+				case "logs":
+					if !m.focusTasks && m.selectedWorker != nil {
+						m.viewingLog = true
+						logPath := fmt.Sprintf("/var/log/supervisor/%s.log", strings.ReplaceAll(m.selectedWorker.Name, ":", "-"))
+						data, err := os.ReadFile(logPath)
+						if err != nil {
+							m.setLogContent(fmt.Sprintf("(Log file %s not found or requires root permissions)\n[Sample Worker Stream]:\n[%s] Worker booted successfully\n[%s] Processed job App\\Jobs\\SendOrderConfirmation\n[%s] Processed job App\\Jobs\\SyncStripeCustomer", logPath, m.selectedWorker.Name, m.selectedWorker.Name, m.selectedWorker.Name))
+						} else {
+							m.setLogContent(string(data))
+						}
+						m.logViewport.GotoBottom()
+						return m, nil
+					}
+				case "refresh":
+					return m, m.FetchWorkersAndSchedule()
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.viewingLog {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc", "q", "tab", "shift+tab":
 				m.viewingLog = false
 				return m, nil
 			default:
@@ -242,7 +273,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "tab":
+		case "tab", "shift+tab":
 			m.focusTasks = !m.focusTasks
 			if m.focusTasks {
 				m.tasksTable.Focus()
@@ -253,28 +284,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "r", "enter":
+		case "space":
+			title := "Background Workers"
+			subtitle := "Select worker action"
+			if !m.focusTasks && m.selectedWorker != nil {
+				title = "Actions: " + m.selectedWorker.Name
+				subtitle = fmt.Sprintf("State: %s | PID: %s", m.selectedWorker.State, m.selectedWorker.PID)
+			}
+			items := []actionmenu.Item{
+				{Key: "restart", Title: "Restart Worker Process", Description: "supervisorctl restart"},
+				{Key: "logs", Title: "Stream Worker Logs", Description: "Read /var/log/supervisor/*.log"},
+				{Key: "refresh", Title: "Refresh Workers & Schedules", Description: "Reload worker statuses"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if !m.focusTasks && m.selectedWorker != nil {
 				m.statusMessage = fmt.Sprintf("Restarting worker %s...", m.selectedWorker.Name)
 				return m, m.RestartWorker(m.selectedWorker.Name)
 			}
-
-		case "l":
-			if !m.focusTasks && m.selectedWorker != nil {
-				m.viewingLog = true
-				logPath := fmt.Sprintf("/var/log/supervisor/%s.log", strings.ReplaceAll(m.selectedWorker.Name, ":", "-"))
-				data, err := os.ReadFile(logPath)
-				if err != nil {
-					m.logViewport.SetContent(fmt.Sprintf("(Log file %s not found or requires root permissions)\n[Sample Worker Stream]:\n[%s] Worker booted successfully\n[%s] Processed job App\\Jobs\\SendOrderConfirmation\n[%s] Processed job App\\Jobs\\SyncStripeCustomer", logPath, m.selectedWorker.Name, m.selectedWorker.Name, m.selectedWorker.Name))
-				} else {
-					m.logViewport.SetContent(string(data))
-				}
-				m.logViewport.GotoBottom()
-				return m, nil
-			}
-
-		case "R":
-			return m, m.FetchWorkersAndSchedule()
 		}
 	}
 
@@ -325,7 +354,7 @@ func (m *Model) updateTables() {
 }
 
 func (m *Model) updateLayout() {
-	tableH := (m.height - 14) / 2
+	tableH := (m.height - 8) / 2
 	if tableH < 4 {
 		tableH = 4
 	}
@@ -337,11 +366,19 @@ func (m *Model) updateLayout() {
 		vpWidth = 40
 	}
 	vpHeight := m.height - 8
-	if vpHeight < 10 {
-		vpHeight = 10
+	if vpHeight < 6 {
+		vpHeight = 6
 	}
 	m.logViewport.Width = vpWidth
 	m.logViewport.Height = vpHeight
+}
+
+func (m *Model) setLogContent(text string) {
+	w := m.logViewport.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.logViewport.SetContent(lipgloss.NewStyle().Width(w).Render(text))
 }
 
 func (m Model) View() string {
@@ -353,46 +390,35 @@ func (m Model) View() string {
 	if m.viewingLog {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.JoinHorizontal(lipgloss.Center,
-				theme.BadgeInfo.Render(fmt.Sprintf(" WORKER LOG: %s ", m.selectedWorker.Name)),
+				lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("Worker Log: "+m.selectedWorker.Name),
 				"   ",
-				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Esc / q: Close Log]"),
+				lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Esc / q: Close"),
 			),
 			"",
 			m.logViewport.View(),
 		)
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Supervisor Workers ", len(m.workers))),
-		" ",
-		theme.BadgeInfo.Render(fmt.Sprintf(" %d Scheduled Tasks ", len(m.tasks))),
-	)
-
 	statusLine := ""
 	if m.statusMessage != "" {
-		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Bold(true).Render(m.statusMessage)
+		statusLine = lipgloss.NewStyle().Foreground(theme.ColorHighlight).Render("  " + m.statusMessage)
 	}
 
-	workersTitle := theme.CardTitleStyle.Render("👷 SUPERVISOR & HORIZON QUEUE WORKERS")
+	workersTitle := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Queue Workers")
 	if !m.focusTasks {
-		workersTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("👷 SUPERVISOR & HORIZON QUEUE WORKERS (Focused)")
+		workersTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Queue Workers")
 	}
 
-	tasksTitle := theme.CardTitleStyle.Render("⏱️ LARAVEL ARTISAN SCHEDULE LIST (schedule:list)")
+	tasksTitle := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Artisan Schedule List")
 	if m.focusTasks {
-		tasksTitle = theme.CardTitleStyle.Foreground(theme.ColorHighlight).Render("⏱️ LARAVEL ARTISAN SCHEDULE LIST (Focused)")
+		tasksTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("▶ Artisan Schedule List")
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("⚙️ BACKGROUND WORKERS & ARTISAN SCHEDULER"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[Tab: Switch Pane | r/Enter: Restart Worker | l: View Log]"),
-		),
-		statusLine,
-		"",
+	elements := []string{}
+	if statusLine != "" {
+		elements = append(elements, statusLine)
+	}
+	elements = append(elements,
 		workersTitle,
 		m.workersTable.View(),
 		"",
@@ -400,10 +426,10 @@ func (m Model) View() string {
 		m.tasksTable.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
-		Render(body)
+		Render(lipgloss.JoinVertical(lipgloss.Left, elements...))
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }

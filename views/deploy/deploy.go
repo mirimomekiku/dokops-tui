@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"dok-ops/internal/actionmenu"
 	"dok-ops/internal/theme"
 )
 
@@ -40,6 +41,7 @@ type Model struct {
 	repos        []RepoInfo
 	table        table.Model
 	logViewport  viewport.Model
+	actionMenu   actionmenu.Model
 	isDeploying  bool
 	pipelineLogs strings.Builder
 	selectedRepo *RepoInfo
@@ -152,7 +154,7 @@ func (m Model) ScanRepositories(root string) tea.Cmd {
 func (m Model) RunLaravelDeployPipeline(repoPath, branch string) tea.Cmd {
 	return func() tea.Msg {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("🚀 Starting Atomic Deployment for %s [%s]\n", repoPath, branch))
+		sb.WriteString(fmt.Sprintf("Starting Atomic Deployment for %s [%s]\n", repoPath, branch))
 		sb.WriteString("------------------------------------------------------------\n")
 
 		steps := []struct {
@@ -177,7 +179,7 @@ func (m Model) RunLaravelDeployPipeline(repoPath, branch string) tea.Cmd {
 			if err != nil {
 				sb.WriteString(fmt.Sprintf("  (Simulated run or non-critical: %v)\n", err))
 			} else {
-				sb.WriteString("  ✓ Success\n")
+				sb.WriteString("  [OK] Success\n")
 				if len(out) > 0 {
 					sb.WriteString("  " + strings.ReplaceAll(string(out), "\n", "\n  ") + "\n")
 				}
@@ -185,7 +187,7 @@ func (m Model) RunLaravelDeployPipeline(repoPath, branch string) tea.Cmd {
 		}
 
 		sb.WriteString("\n------------------------------------------------------------\n")
-		sb.WriteString("🎉 DEPLOYMENT COMPLETE! All caches primed and application is live.\n")
+		sb.WriteString("DEPLOYMENT COMPLETE: All caches primed and application is live.\n")
 
 		return PipelineProgressMsg{
 			Output: sb.String(),
@@ -199,13 +201,13 @@ func (m Model) FastForwardPull(repoPath string) tea.Cmd {
 		out, err := exec.Command("git", "-C", repoPath, "pull", "--ff-only").CombinedOutput()
 		if err != nil {
 			return PipelineProgressMsg{
-				Output: fmt.Sprintf("❌ Fast-forward pull failed: %v\n%s", err, string(out)),
+				Output: fmt.Sprintf("Fast-forward pull failed: %v\n%s", err, string(out)),
 				Done:   true,
 				Err:    err,
 			}
 		}
 		return PipelineProgressMsg{
-			Output: fmt.Sprintf("✓ Fast-forward pull succeeded for %s:\n%s", repoPath, string(out)),
+			Output: fmt.Sprintf("Fast-forward pull succeeded for %s:\n%s", repoPath, string(out)),
 			Done:   true,
 		}
 	}
@@ -230,11 +232,37 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case PipelineProgressMsg:
 		m.isDeploying = false
 		m.pipelineLogs.WriteString(msg.Output + "\n")
-		m.logViewport.SetContent(m.pipelineLogs.String())
+		m.setLogContent(m.pipelineLogs.String())
 		m.logViewport.GotoBottom()
 		cmds = append(cmds, m.ScanRepositories("/var/www"))
 
 	case tea.KeyMsg:
+		if m.actionMenu.IsOpen() {
+			action, closed := m.actionMenu.Update(msg)
+			if closed && action != "" {
+				switch action {
+				case "pipeline":
+					if m.selectedRepo != nil {
+						m.isDeploying = true
+						m.pipelineLogs.Reset()
+						m.pipelineLogs.WriteString(fmt.Sprintf("Triggered zero-downtime deployment for %s...\n", m.selectedRepo.Name))
+						m.setLogContent(m.pipelineLogs.String())
+						return m, m.RunLaravelDeployPipeline(m.selectedRepo.Path, m.selectedRepo.Branch)
+					}
+				case "pull":
+					if m.selectedRepo != nil {
+						m.pipelineLogs.Reset()
+						m.pipelineLogs.WriteString(fmt.Sprintf("Running git pull --ff-only for %s...\n", m.selectedRepo.Name))
+						m.setLogContent(m.pipelineLogs.String())
+						return m, m.FastForwardPull(m.selectedRepo.Path)
+					}
+				case "rescan":
+					return m, m.ScanRepositories("/var/www")
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "up", "down", "j", "k":
 			var tCmd tea.Cmd
@@ -247,25 +275,29 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, tCmd
 
-		case "d", "enter":
+		case "space":
+			title := "Deployment Hub"
+			subtitle := "Select deployment action"
+			if m.selectedRepo != nil {
+				title = "Actions: " + m.selectedRepo.Name
+				subtitle = fmt.Sprintf("Branch: %s | Status: %s", m.selectedRepo.Branch, m.selectedRepo.DirtyDesc)
+			}
+			items := []actionmenu.Item{
+				{Key: "pipeline", Title: "Dispatch Zero-Downtime Pipeline", Description: "Run pull, migrate, cache & restart"},
+				{Key: "pull", Title: "Fast-forward Pull (git pull)", Description: "Pull remote changes safely"},
+				{Key: "rescan", Title: "Rescan Repositories", Description: "Rescan /var/www directory"},
+			}
+			m.actionMenu.Open(title, subtitle, items)
+			return m, nil
+
+		case "enter":
 			if m.selectedRepo != nil {
 				m.isDeploying = true
 				m.pipelineLogs.Reset()
-				m.pipelineLogs.WriteString(fmt.Sprintf("Triggered Laravel deployment pipeline for %s...\n", m.selectedRepo.Name))
-				m.logViewport.SetContent(m.pipelineLogs.String())
+				m.pipelineLogs.WriteString(fmt.Sprintf("Triggered zero-downtime deployment for %s...\n", m.selectedRepo.Name))
+				m.setLogContent(m.pipelineLogs.String())
 				return m, m.RunLaravelDeployPipeline(m.selectedRepo.Path, m.selectedRepo.Branch)
 			}
-
-		case "p":
-			if m.selectedRepo != nil {
-				m.pipelineLogs.Reset()
-				m.pipelineLogs.WriteString(fmt.Sprintf("Running git pull --ff-only for %s...\n", m.selectedRepo.Name))
-				m.logViewport.SetContent(m.pipelineLogs.String())
-				return m, m.FastForwardPull(m.selectedRepo.Path)
-			}
-
-		case "r":
-			return m, m.ScanRepositories("/var/www")
 		}
 	}
 
@@ -274,6 +306,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	cmds = append(cmds, vpCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) setLogContent(text string) {
+	w := m.logViewport.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	m.logViewport.SetContent(lipgloss.NewStyle().Width(w).Render(text))
 }
 
 func (m *Model) updateTableRows() {
@@ -322,31 +362,27 @@ func (m Model) View() string {
 		}
 	}
 
-	statsBadge := lipgloss.JoinHorizontal(lipgloss.Center,
-		theme.BadgeSuccess.Render(fmt.Sprintf(" %d Repositories ", len(m.repos))),
-		" ",
-		theme.BadgeWarning.Render(fmt.Sprintf(" %d Modified/Dirty ", dirtyCount)),
+	headerLine := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorPrimary).Render("Repositories"),
+		"   ",
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(fmt.Sprintf("(total: %d)", len(m.repos))),
+		"  ",
+		lipgloss.NewStyle().Foreground(theme.ColorWarning).Render(fmt.Sprintf("• %d modified/dirty", dirtyCount)),
 	)
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Center,
-			theme.CardTitleStyle.Render("🚀 MULTI-REPO GIT BRANCH & DEPLOYMENT HUB"),
-			"   ",
-			statsBadge,
-			"   ",
-			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("[j/k: Select Repo | p: Fast-forward Pull | d: Run Full Deploy Pipeline]"),
-		),
+		headerLine,
 		"",
 		m.table.View(),
 		"",
-		theme.CardTitleStyle.Render("📜 DEPLOYMENT STREAM LOGS"),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorSecondary).Render("Deployment Stream Logs"),
 		m.logViewport.View(),
 	)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorBorder).
+	rendered := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(contentWidth).
 		Render(body)
+
+	return m.actionMenu.RenderModal(rendered, m.width, m.height)
 }
