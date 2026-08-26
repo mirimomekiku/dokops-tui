@@ -23,6 +23,7 @@ var (
 	ColorMuted      = lipgloss.Color("#565f89") // Muted Text
 	ColorHighlight  = lipgloss.Color("#ff9e64") // Orange Accent
 	ColorBorder     = lipgloss.Color("#3b4261") // Subtle Border
+	ColorSubtle     = lipgloss.Color("#292e42") // Very subtle divider bg
 )
 
 // Reusable Lipgloss Styles
@@ -55,8 +56,8 @@ var (
 
 	ActiveWorkspaceStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("#ffffff")).
-				Background(lipgloss.Color("#7aa2f7")).
+				Foreground(lipgloss.Color("#1a1b26")).
+				Background(ColorHighlight).
 				Padding(0, 1)
 
 	InactiveWorkspaceStyle = lipgloss.NewStyle().
@@ -66,8 +67,8 @@ var (
 
 	ActiveSubTabStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(ColorHighlight).
-				Background(ColorSurface).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#3d59a1")).
 				Padding(0, 1)
 
 	InactiveSubTabStyle = lipgloss.NewStyle().
@@ -138,6 +139,40 @@ var (
 			Background(ColorPrimary).
 			Bold(true).
 			Padding(0, 1)
+
+	// KeyBadgeStyle renders a styled [key] shortcut pill used in footers and modals
+	KeyBadgeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#c0caf5")).
+			Background(lipgloss.Color("#3b4261")).
+			Bold(true).
+			Padding(0, 1)
+
+	// KeyBadgePrimaryStyle renders a primary-colored [key] badge for the most important action
+	KeyBadgePrimaryStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#1a1b26")).
+				Background(ColorHighlight).
+				Bold(true).
+				Padding(0, 1)
+
+	// SectionHeaderStyle for view section titles (within content panels)
+	SectionHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorSecondary)
+
+	// DividerStyle renders a horizontal rule separator character
+	DividerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#3b4261"))
+
+	// SelectedRowStyle for table / list selected items
+	SelectedRowStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#283457"))
+
+	// DangerRowStyle for destructive action items
+	DangerRowStyle = lipgloss.NewStyle().
+			Foreground(ColorDanger).
+			Bold(true)
 )
 
 // RenderProgressBar returns a stylized progress bar
