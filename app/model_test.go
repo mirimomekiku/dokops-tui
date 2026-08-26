@@ -2,10 +2,12 @@ package app
 
 import (
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestWorkspacesCoversAllTabs(t *testing.T) {
-	tabCount := 21 // 21 tabs across 4 active workspaces (Tools disabled)
+	tabCount := 20 // 20 tabs across 4 active workspaces (Ports removed from System; Tools disabled)
 	seen := make(map[Tab]bool)
 
 	for _, ws := range Workspaces {
@@ -28,8 +30,8 @@ func TestWorkspaceNavigation(t *testing.T) {
 	if m.ActiveWorkspace != WorkspaceSystem {
 		t.Errorf("Expected initial workspace to be WorkspaceSystem, got %v", m.ActiveWorkspace)
 	}
-	if m.ActiveTab != TabMonitor {
-		t.Errorf("Expected initial tab to be TabMonitor, got %v", m.ActiveTab)
+	if m.ActiveTab != TabDashboard {
+		t.Errorf("Expected initial tab to be TabDashboard, got %v", m.ActiveTab)
 	}
 
 	// Switch to Workspace WebOps
@@ -66,3 +68,42 @@ func TestWorkspaceNavigation(t *testing.T) {
 		t.Errorf("Expected active tab to be TabDisk, got %v", m.ActiveTab)
 	}
 }
+
+func TestCommandPaletteIntegration(t *testing.T) {
+	m := NewModel()
+
+	// Initially palette closed
+	if m.CommandPalette.IsOpen() {
+		t.Errorf("Expected CommandPalette to be closed initially")
+	}
+
+	// Trigger Ctrl+K keypress
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updatedModel.(Model)
+
+	if !m.CommandPalette.IsOpen() {
+		t.Errorf("Expected CommandPalette to open on Ctrl+K")
+	}
+
+	// Type "nginx" into the palette
+	for _, r := range "nginx" {
+		updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updatedModel.(Model)
+	}
+
+	// Press Enter to select
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updatedModel.(Model)
+
+	if m.CommandPalette.IsOpen() {
+		t.Errorf("Expected CommandPalette to close after selection")
+	}
+
+	if m.ActiveTab != TabNginx {
+		t.Errorf("Expected ActiveTab to be TabNginx, got %v", m.ActiveTab)
+	}
+	if m.ActiveWorkspace != WorkspaceWebOps {
+		t.Errorf("Expected ActiveWorkspace to be WorkspaceWebOps for TabNginx, got %v", m.ActiveWorkspace)
+	}
+}
+

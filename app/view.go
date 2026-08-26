@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,7 +10,11 @@ import (
 
 func (m Model) View() string {
 	if m.Width == 0 || m.Height == 0 {
-		return "Initializing dok-ops..."
+		return lipgloss.Place(
+			80, 24,
+			lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("Loading…"),
+		)
 	}
 
 	header := m.renderHeader()
@@ -19,6 +22,8 @@ func (m Model) View() string {
 
 	var activeContent string
 	switch m.ActiveTab {
+	case TabDashboard:
+		activeContent = m.DashboardView.View()
 	case TabMonitor:
 		activeContent = m.MonitorView.View()
 	case TabContainers:
@@ -69,327 +74,180 @@ func (m Model) View() string {
 		activeContent = m.TerminalView.View()
 	}
 
-	contentHeight := m.Height - lipgloss.Height(header) - lipgloss.Height(footer)
-	if contentHeight < 10 {
-		contentHeight = 10
+	contentH := m.Height - lipgloss.Height(header) - lipgloss.Height(footer)
+	if contentH < 4 {
+		contentH = 4
 	}
 
-	body := lipgloss.NewStyle().
-		Height(contentHeight).
+	content := lipgloss.NewStyle().
 		Width(m.Width).
+		Height(contentH).
 		Render(activeContent)
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		body,
-		footer,
-	)
+	rendered := lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
+	return m.CommandPalette.RenderModal(rendered, m.Width, m.Height)
 }
 
+// renderHeader renders a single-line bar: logo · location · search hint
 func (m Model) renderHeader() string {
-	logo := theme.TitleStyle.Render("⚡ dok-ops")
+	if m.ActiveTab == TabDashboard {
+		title := lipgloss.JoinHorizontal(lipgloss.Center,
+			lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render("DokOps"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  ·  Operations Cockpit"),
+		)
 
-	// Row 1: Workspace Pills
-	var wsTabs []string
-	for _, ws := range Workspaces {
-		wsLabel := fmt.Sprintf("%s %s", ws.Icon, ws.Name)
-		if ws.ID == m.ActiveWorkspace {
-			wsTabs = append(wsTabs, theme.ActiveWorkspaceStyle.Render(wsLabel))
-		} else {
-			wsTabs = append(wsTabs, theme.InactiveWorkspaceStyle.Render(wsLabel))
+		searchHint := lipgloss.JoinHorizontal(lipgloss.Center,
+			lipgloss.NewStyle().
+				Foreground(theme.ColorMuted).
+				Background(lipgloss.Color("#2f3549")).
+				Padding(0, 1).
+				Render("Ctrl+K"),
+			lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  search"),
+		)
+
+		gap := m.Width - lipgloss.Width(title) - lipgloss.Width(searchHint) - 4
+		if gap < 1 {
+			gap = 1
 		}
-	}
-	wsBar := lipgloss.JoinHorizontal(lipgloss.Top, wsTabs...)
 
-	// Quick Stats (Uptime, Load, Host)
-	loadStr := fmt.Sprintf("Load: %.2f %.2f %.2f", m.QuickStats.Load1, m.QuickStats.Load5, m.QuickStats.Load15)
-	uptimeStr := fmt.Sprintf("Up: %s", m.QuickStats.Uptime)
-	hostStr := fmt.Sprintf("%s (%s)", m.QuickStats.Hostname, m.QuickStats.OS)
+		bar := lipgloss.JoinHorizontal(lipgloss.Center,
+			title,
+			strings.Repeat(" ", gap),
+			searchHint,
+		)
 
-	quickStats := lipgloss.NewStyle().
-		Foreground(theme.ColorMuted).
-		Render(fmt.Sprintf("%s | %s | %s", hostStr, uptimeStr, loadStr))
-
-	leftSection := lipgloss.JoinHorizontal(lipgloss.Center, logo, " ", wsBar)
-	gapWidth := m.Width - lipgloss.Width(leftSection) - lipgloss.Width(quickStats) - 2
-	if gapWidth < 1 {
-		gapWidth = 1
+		return lipgloss.NewStyle().
+			Background(theme.ColorSurface).
+			Width(m.Width).
+			Padding(0, 2).
+			Render(bar)
 	}
 
-	row1 := lipgloss.JoinHorizontal(lipgloss.Center,
-		leftSection,
-		strings.Repeat(" ", gapWidth),
-		quickStats,
+	activeWS := Workspaces[m.ActiveWorkspace]
+	activeTabName := TabDisplayNames[m.ActiveTab]
+
+	// Left: DokOps › Workspace › Tool
+	logo := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(theme.ColorHighlight).
+		Render("DokOps")
+
+	wsName := activeWS.Name
+	// Strip "N: " numbering prefix stored in the workspace name
+	if len(wsName) > 3 && wsName[1] == ':' {
+		wsName = wsName[3:]
+	}
+
+	location := lipgloss.JoinHorizontal(lipgloss.Center,
+		logo,
+		lipgloss.NewStyle().Foreground(theme.ColorBorder).Render("  ›  "),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorText).Render(wsName),
+		lipgloss.NewStyle().Foreground(theme.ColorBorder).Render("  ›  "),
+		lipgloss.NewStyle().Bold(true).Foreground(theme.ColorHighlight).Render(activeTabName),
 	)
 
-	row1Rendered := lipgloss.NewStyle().
-		Background(theme.ColorSurface).
-		Width(m.Width).
-		Padding(0, 1).
-		Render(row1)
+	// Right: [Ctrl+K]
+	searchHint := lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().
+			Foreground(theme.ColorMuted).
+			Background(lipgloss.Color("#2f3549")).
+			Padding(0, 1).
+			Render("Ctrl+K"),
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("  search"),
+	)
 
-	// Row 2: Sub-tabs for current active workspace
-	activeWS := Workspaces[m.ActiveWorkspace]
-	var subTabs []string
-	subTabs = append(subTabs, lipgloss.NewStyle().Foreground(theme.ColorSecondary).Bold(true).Render(activeWS.Icon+" "+activeWS.Name+" ▸ "))
-	for _, t := range activeWS.Tabs {
-		tabName := TabDisplayNames[t]
-		if t == m.ActiveTab {
-			subTabs = append(subTabs, theme.ActiveSubTabStyle.Render("● "+tabName))
-		} else {
-			subTabs = append(subTabs, theme.InactiveSubTabStyle.Render("  "+tabName+"  "))
-		}
-	}
-	subTabBar := lipgloss.JoinHorizontal(lipgloss.Center, subTabs...)
-
-	row2Rendered := lipgloss.NewStyle().
-		Background(theme.ColorDark).
-		Width(m.Width).
-		Padding(0, 1).
-		Render(subTabBar)
-
-	return lipgloss.JoinVertical(lipgloss.Left, row1Rendered, row2Rendered)
-}
-
-func (m Model) renderFooter() string {
-	var hints []string
-
-	// Standard prefix for global navigation
-	navHint := theme.KeyStyle.Render("1-4/←→") + ": " + theme.DescStyle.Render("Workspace")
-	tabHint := theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("SubTab")
-
-	switch m.ActiveTab {
-	case TabMonitor:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Navigate"),
-			theme.KeyStyle.Render("c/m/p/n") + ": " + theme.DescStyle.Render("Sort (CPU/Mem/PID/Name)"),
-			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill Proc"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh"),
-			theme.KeyStyle.Render("q / Ctrl+C") + ": " + theme.DescStyle.Render("Quit"),
-		}
-	case TabContainers:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select"),
-			theme.KeyStyle.Render("u/Enter") + ": " + theme.DescStyle.Render("Start"),
-			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Stop"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Restart"),
-			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("Logs"),
-			theme.KeyStyle.Render("d") + ": " + theme.DescStyle.Render("Remove"),
-			theme.KeyStyle.Render("R") + ": " + theme.DescStyle.Render("Refresh"),
-		}
-	case TabServices:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Unit"),
-			theme.KeyStyle.Render("u/Enter") + ": " + theme.DescStyle.Render("Start"),
-			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Stop"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Restart"),
-			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("Journal Logs"),
-			theme.KeyStyle.Render("f") + ": " + theme.DescStyle.Render("Filter (Active/Failed/All)"),
-			theme.KeyStyle.Render("R") + ": " + theme.DescStyle.Render("Refresh"),
-		}
-	case TabPorts:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Port"),
-			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill Proc (Free Port)"),
-			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("Toggle Listen/All"),
-			theme.KeyStyle.Render("t/u") + ": " + theme.DescStyle.Render("Filter TCP/UDP"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh"),
-		}
-	case TabNginx:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Site"),
-			theme.KeyStyle.Render("e/Space") + ": " + theme.DescStyle.Render("Toggle Enable/Disable"),
-			theme.KeyStyle.Render("t") + ": " + theme.DescStyle.Render("Syntax Test (nginx -t)"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Reload Nginx"),
-			theme.KeyStyle.Render("v/Enter") + ": " + theme.DescStyle.Render("View Config"),
-			theme.KeyStyle.Render("R") + ": " + theme.DescStyle.Render("Refresh"),
-		}
-	case TabAutoNginx:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Detected Project"),
-			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Cycle FastCGI PHP Socket"),
-			theme.KeyStyle.Render("g/Enter") + ": " + theme.DescStyle.Render("Generate & Deploy Nginx Config"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Rescan /var/www"),
-		}
-	case TabDeploy:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Repository"),
-			theme.KeyStyle.Render("p") + ": " + theme.DescStyle.Render("Fast-forward Pull (git pull --ff-only)"),
-			theme.KeyStyle.Render("d/Enter") + ": " + theme.DescStyle.Render("Dispatch Zero-Downtime Pipeline"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Rescan Repos"),
-		}
-	case TabPHPFPM:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select PHP Version"),
-			theme.KeyStyle.Render("r/Enter") + ": " + theme.DescStyle.Render("Restart PHP Daemon"),
-			theme.KeyStyle.Render("c") + ": " + theme.DescStyle.Render("Flush OPcache & APCu"),
-			theme.KeyStyle.Render("R") + ": " + theme.DescStyle.Render("Refresh Sockets"),
-		}
-	case TabWorkers:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Workers/Schedule"),
-			theme.KeyStyle.Render("r/Enter") + ": " + theme.DescStyle.Render("Restart Worker Process"),
-			theme.KeyStyle.Render("l") + ": " + theme.DescStyle.Render("View Worker Log Tail"),
-			theme.KeyStyle.Render("R") + ": " + theme.DescStyle.Render("Refresh Workers"),
-		}
-	case TabCertbot:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Domain/Email"),
-			theme.KeyStyle.Render("t") + ": " + theme.DescStyle.Render("Dry-run Challenge Test"),
-			theme.KeyStyle.Render("p/Enter") + ": " + theme.DescStyle.Render("Provision Let's Encrypt SSL"),
-			theme.KeyStyle.Render("d") + ": " + theme.DescStyle.Render("Lookup DNS"),
-		}
-	case TabKnife:
-		hints = []string{
-			navHint,
-			theme.KeyStyle.Render("1-4") + ": " + theme.DescStyle.Render("Switch Tool (JWT / Cron / Base64 / Hash)"),
-			theme.KeyStyle.Render("Type in input") + ": " + theme.DescStyle.Render("Instant offline conversion"),
-		}
-	case TabSSL:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Inspect Cert"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Details"),
-		}
-	case TabDatabase:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Conn/Query"),
-			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Connect / Run Query"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Result Table"),
-		}
-	case TabBandwidth:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Sample Bandwidth"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Select Interface"),
-		}
-	case TabScanner:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Select Port Preset"),
-			theme.KeyStyle.Render("Enter/r") + ": " + theme.DescStyle.Render("Run Concurrent Scan"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Open Ports"),
-		}
-	case TabGit:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Files/Commits"),
-			theme.KeyStyle.Render("d/Enter") + ": " + theme.DescStyle.Render("View Diff"),
-			theme.KeyStyle.Render("s/u") + ": " + theme.DescStyle.Render("Stage/Unstage"),
-			theme.KeyStyle.Render("z/Z") + ": " + theme.DescStyle.Render("Stash/Pop"),
-		}
-	case TabCI:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("v/Enter") + ": " + theme.DescStyle.Render("View Run Details"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh GitHub Actions"),
-		}
-	case TabSSH:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Sessions/Keys"),
-			theme.KeyStyle.Render("k") + ": " + theme.DescStyle.Render("Kill SSH Session"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh Auditor"),
-		}
-	case TabEnv:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Switch Env/Example"),
-			theme.KeyStyle.Render("Enter/r") + ": " + theme.DescStyle.Render("Compare & Validate Drift"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Keys"),
-		}
-	case TabTimers:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("f") + ": " + theme.DescStyle.Render("Filter (Crons / Systemd Timers)"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Refresh Schedules"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Timeline"),
-		}
-	case TabDisk:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Navigate"),
-			theme.KeyStyle.Render("Enter / l") + ": " + theme.DescStyle.Render("Open Dir"),
-			theme.KeyStyle.Render("Backspace / h") + ": " + theme.DescStyle.Render("Parent Dir"),
-			theme.KeyStyle.Render("s") + ": " + theme.DescStyle.Render("Toggle Sort"),
-			theme.KeyStyle.Render("r") + ": " + theme.DescStyle.Render("Rescan"),
-			theme.KeyStyle.Render("d") + ": " + theme.DescStyle.Render("Delete"),
-		}
-	case TabHTTP:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Cycle Inputs"),
-			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Change Method"),
-			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Execute Request"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Response"),
-		}
-	case TabDNS:
-		hints = []string{
-			navHint,
-			tabHint,
-			theme.KeyStyle.Render("Tab") + ": " + theme.DescStyle.Render("Cycle Focus"),
-			theme.KeyStyle.Render("h/l") + ": " + theme.DescStyle.Render("Change Type/Server"),
-			theme.KeyStyle.Render("Enter") + ": " + theme.DescStyle.Render("Resolve DNS"),
-			theme.KeyStyle.Render("j/k") + ": " + theme.DescStyle.Render("Scroll Records"),
-		}
-	case TabTerminal:
-		hints = []string{
-			navHint,
-			theme.KeyStyle.Render("i") + ": " + theme.DescStyle.Render("Focus Shell"),
-			theme.KeyStyle.Render("Ctrl+]") + ": " + theme.DescStyle.Render("Unfocus Shell"),
-			theme.KeyStyle.Render("Ctrl+C") + ": " + theme.DescStyle.Render("Send SIGINT to Shell"),
-		}
+	gap := m.Width - lipgloss.Width(location) - lipgloss.Width(searchHint) - 4
+	if gap < 1 {
+		gap = 1
 	}
 
-	footerLeft := strings.Join(hints, "  │  ")
-	footerRight := lipgloss.NewStyle().Foreground(theme.ColorMuted).Render("dok-ops Cockpit")
-
-	gapWidth := m.Width - lipgloss.Width(footerLeft) - lipgloss.Width(footerRight) - 2
-	if gapWidth < 1 {
-		gapWidth = 1
-	}
-
-	footerBar := lipgloss.JoinHorizontal(lipgloss.Center,
-		footerLeft,
-		strings.Repeat(" ", gapWidth),
-		footerRight,
+	bar := lipgloss.JoinHorizontal(lipgloss.Center,
+		location,
+		strings.Repeat(" ", gap),
+		searchHint,
 	)
 
 	return lipgloss.NewStyle().
 		Background(theme.ColorSurface).
 		Width(m.Width).
-		Padding(0, 1).
-		Render(footerBar)
+		Padding(0, 2).
+		Render(bar)
+}
+
+// renderFooter renders a single-line bar of plain key hints
+func (m Model) renderFooter() string {
+	sep := lipgloss.NewStyle().Foreground(theme.ColorBorder).Render("   ·   ")
+
+	var hints []string
+	switch m.ActiveTab {
+	case TabDashboard:
+		hints = []string{
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search tools"),
+			hint("Tab", "first tool"),
+			hint("Ctrl+C", "quit"),
+		}
+	case TabTerminal:
+		hints = []string{
+			hint("i", "focus shell"),
+			hint("Ctrl+]", "unfocus"),
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search"),
+			hint("Ctrl+C", "quit"),
+		}
+	case TabKnife:
+		hints = []string{
+			hint("Shift+Tab", "knife sub-tool"),
+			hint("Tab", "next tool"),
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search"),
+			hint("Ctrl+C", "quit"),
+		}
+	case TabDatabase, TabCertbot, TabEnv, TabHTTP, TabDNS:
+		hints = []string{
+			hint("Enter", "execute / save"),
+			hint("Space", "actions"),
+			hint("Shift+Tab", "switch field"),
+			hint("Tab", "next tool"),
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search"),
+			hint("Ctrl+C", "quit"),
+		}
+	case TabGit, TabWorkers, TabSSH, TabAutoNginx:
+		hints = []string{
+			hint("Enter", "view details"),
+			hint("Space", "actions"),
+			hint("j/k", "navigate"),
+			hint("Shift+Tab", "switch pane"),
+			hint("Tab", "next tool"),
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search"),
+			hint("Ctrl+C", "quit"),
+		}
+	default:
+		hints = []string{
+			hint("Enter", "view / run"),
+			hint("Space", "actions"),
+			hint("j/k", "navigate"),
+			hint("Tab", "next tool"),
+			hint("1-4", "workspace"),
+			hint("Ctrl+K", "search"),
+			hint("Ctrl+C", "quit"),
+		}
+	}
+
+	left := strings.Join(hints, sep)
+
+	return lipgloss.NewStyle().
+		Background(theme.ColorSurface).
+		Foreground(theme.ColorMuted).
+		Width(m.Width).
+		Padding(0, 2).
+		Render(left)
+}
+
+// hint formats a single "key: desc" pair for the footer
+func hint(key, desc string) string {
+	return lipgloss.NewStyle().Foreground(theme.ColorText).Bold(true).Render(key) +
+		lipgloss.NewStyle().Foreground(theme.ColorMuted).Render(": "+desc)
 }

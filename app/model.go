@@ -8,11 +8,13 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/load"
 
+	"dok-ops/internal/commandpalette"
 	"dok-ops/views/autonginx"
 	"dok-ops/views/bandwidth"
 	"dok-ops/views/certbot"
 	"dok-ops/views/ci"
 	"dok-ops/views/containers"
+	"dok-ops/views/dashboard"
 	"dok-ops/views/database"
 	"dok-ops/views/deploy"
 	"dok-ops/views/disk"
@@ -37,7 +39,8 @@ import (
 type Tab int
 
 const (
-	TabMonitor Tab = iota
+	TabDashboard Tab = iota
+	TabMonitor
 	TabContainers
 	TabServices
 	TabPorts
@@ -76,7 +79,6 @@ const (
 type WorkspaceInfo struct {
 	ID   Workspace
 	Name string
-	Icon string
 	Tabs []Tab
 }
 
@@ -84,30 +86,27 @@ var Workspaces = []WorkspaceInfo{
 	{
 		ID:   WorkspaceSystem,
 		Name: "1: System",
-		Icon: "🖥️",
-		Tabs: []Tab{TabMonitor, TabBandwidth, TabDisk, TabTimers, TabServices, TabPorts},
+		Tabs: []Tab{TabMonitor, TabBandwidth, TabDisk, TabTimers, TabServices},
 	},
 	{
 		ID:   WorkspaceWebOps,
 		Name: "2: WebOps",
-		Icon: "🌐",
 		Tabs: []Tab{TabNginx, TabAutoNginx, TabPHPFPM, TabCertbot, TabSSL, TabWorkers},
 	},
 	{
 		ID:   WorkspaceDeploy,
 		Name: "3: Deploy",
-		Icon: "🚀",
 		Tabs: []Tab{TabDeploy, TabGit, TabCI, TabEnv},
 	},
 	{
 		ID:   WorkspaceNetDB,
 		Name: "4: Net & DB",
-		Icon: "🗄️",
 		Tabs: []Tab{TabDatabase, TabContainers, TabHTTP, TabDNS, TabScanner},
 	},
 }
 
 var TabDisplayNames = map[Tab]string{
+	TabDashboard:  "Dashboard",
 	TabMonitor:    "Monitor",
 	TabBandwidth:  "Bandwidth",
 	TabDisk:       "Disk",
@@ -156,6 +155,7 @@ type Model struct {
 	QuickStats      QuickStatsMsg
 
 	// Sub-views
+	DashboardView  dashboard.Model
 	MonitorView    monitor.Model
 	ContainersView containers.Model
 	ServicesView   services.Model
@@ -180,6 +180,187 @@ type Model struct {
 	HTTPView       httpclient.Model
 	DNSView        dns.Model
 	TerminalView   terminal.Model
+	CommandPalette commandpalette.Model
+}
+
+func GetAllCommandPaletteItems() []commandpalette.CommandItem {
+	return []commandpalette.CommandItem{
+		{
+			TabID:       int(TabDashboard),
+			Title:       "DokOps Dashboard",
+			Category:    "System",
+			Description: "Main landing dashboard & operations overview",
+			Keywords:    []string{"home", "dashboard", "main", "overview", "landing"},
+		},
+		{
+			TabID:       int(TabMonitor),
+			Title:       "System Monitor",
+			Category:    "System",
+			Description: "CPU, memory, load averages, processes (top/htop)",
+			Keywords:    []string{"top", "htop", "cpu", "ram", "mem", "processes", "ps", "kill", "system"},
+		},
+		{
+			TabID:       int(TabContainers),
+			Title:       "Docker Containers",
+			Category:    "Net & DB",
+			Description: "Docker containers, live log streaming, start/stop/restart",
+			Keywords:    []string{"docker", "containers", "ps", "logs", "compose", "images", "restart", "stop"},
+		},
+		{
+			TabID:       int(TabServices),
+			Title:       "Systemd Services",
+			Category:    "System",
+			Description: "Systemd service units & journalctl log viewer",
+			Keywords:    []string{"systemd", "services", "journalctl", "logs", "systemctl", "daemon", "restart"},
+		},
+		{
+			TabID:       int(TabPorts),
+			Title:       "Ports & Sockets",
+			Category:    "System",
+			Description: "Listening sockets & port-to-PID mapper (ss/lsof)",
+			Keywords:    []string{"ports", "sockets", "ss", "lsof", "netstat", "tcp", "udp", "listen", "kill port"},
+		},
+		{
+			TabID:       int(TabNginx),
+			Title:       "Nginx VHosts",
+			Category:    "WebOps",
+			Description: "Virtual hosts, sites-available/enabled, nginx -t",
+			Keywords:    []string{"nginx", "vhosts", "sites", "web", "conf", "reverse proxy", "reload"},
+		},
+		{
+			TabID:       int(TabAutoNginx),
+			Title:       "Auto-Templater",
+			Category:    "WebOps",
+			Description: "Framework auto-detector and nginx config generator",
+			Keywords:    []string{"autonginx", "templater", "laravel", "nextjs", "spa", "generator", "fastcgi"},
+		},
+		{
+			TabID:       int(TabDeploy),
+			Title:       "Deploy Hub",
+			Category:    "Deploy",
+			Description: "Zero-downtime multi-repo deployment pipeline",
+			Keywords:    []string{"deploy", "pipeline", "release", "ci/cd", "pull", "migrate", "artisan"},
+		},
+		{
+			TabID:       int(TabPHPFPM),
+			Title:       "PHP-FPM Switcher",
+			Category:    "WebOps",
+			Description: "PHP version pool and OPcache/APCu manager",
+			Keywords:    []string{"php", "phpfpm", "fpm", "opcache", "apcu", "fastcgi", "socket", "version"},
+		},
+		{
+			TabID:       int(TabWorkers),
+			Title:       "Artisan & Workers",
+			Category:    "WebOps",
+			Description: "Supervisor queue workers and schedule:list",
+			Keywords:    []string{"workers", "artisan", "supervisor", "queue", "schedule", "cron", "jobs"},
+		},
+		{
+			TabID:       int(TabCertbot),
+			Title:       "Certbot SSL",
+			Category:    "WebOps",
+			Description: "Let's Encrypt automated SSL provisioning & DNS checks",
+			Keywords:    []string{"certbot", "letsencrypt", "ssl", "tls", "certificates", "https", "provision"},
+		},
+		{
+			TabID:       int(TabKnife),
+			Title:       "Swiss Knife",
+			Category:    "Tools",
+			Description: "System utility tools and quick diagnostics",
+			Keywords:    []string{"knife", "tools", "diagnostics", "utilities", "benchmarks"},
+		},
+		{
+			TabID:       int(TabSSL),
+			Title:       "SSL/TLS Inspector",
+			Category:    "WebOps",
+			Description: "Certificate expiration, SANs and cipher suites",
+			Keywords:    []string{"ssl", "tls", "cert", "expiration", "s_client", "https", "sans", "expiry"},
+		},
+		{
+			TabID:       int(TabDatabase),
+			Title:       "Database Runner",
+			Category:    "Net & DB",
+			Description: "PostgreSQL & MySQL queries and connection metrics",
+			Keywords:    []string{"db", "database", "sql", "postgres", "postgresql", "mysql", "queries", "select"},
+		},
+		{
+			TabID:       int(TabBandwidth),
+			Title:       "Live Bandwidth",
+			Category:    "System",
+			Description: "Real-time interface I/O throughput (iftop)",
+			Keywords:    []string{"bandwidth", "iftop", "network", "rx", "tx", "traffic", "speed", "interface"},
+		},
+		{
+			TabID:       int(TabScanner),
+			Title:       "Port Scanner",
+			Category:    "Net & DB",
+			Description: "Concurrent TCP port sweep & banner grabber (nmap lite)",
+			Keywords:    []string{"scanner", "nmap", "portscan", "sweep", "network", "reachability", "open ports"},
+		},
+		{
+			TabID:       int(TabGit),
+			Title:       "Git Inspector",
+			Category:    "Deploy",
+			Description: "Git status, diffs, staging and stash (lazygit)",
+			Keywords:    []string{"git", "diff", "stage", "unstage", "stash", "lazygit", "commit", "branch"},
+		},
+		{
+			TabID:       int(TabCI),
+			Title:       "GitHub Actions CI",
+			Category:    "Deploy",
+			Description: "Workflow runs, statuses and commit logs",
+			Keywords:    []string{"ci", "github actions", "workflows", "runs", "builds", "pipelines", "actions"},
+		},
+		{
+			TabID:       int(TabSSH),
+			Title:       "SSH Auditor",
+			Category:    "System",
+			Description: "Active login sessions and authorized_keys",
+			Keywords:    []string{"ssh", "sessions", "logins", "authorized_keys", "tty", "who", "kill session"},
+		},
+		{
+			TabID:       int(TabEnv),
+			Title:       ".ENV Validator",
+			Category:    "Deploy",
+			Description: "Environment drift and missing variables checker",
+			Keywords:    []string{"env", "environment", "dotenv", "drift", "config", "variables", "missing"},
+		},
+		{
+			TabID:       int(TabTimers),
+			Title:       "Timers & Cron",
+			Category:    "System",
+			Description: "Systemd timers and cron schedule timeline",
+			Keywords:    []string{"timers", "cron", "crontab", "scheduled", "systemd", "timeline", "countdown"},
+		},
+		{
+			TabID:       int(TabDisk),
+			Title:       "Disk Space (ncdu)",
+			Category:    "System",
+			Description: "Hierarchical disk space analyzer & storage cleanup",
+			Keywords:    []string{"disk", "ncdu", "du", "storage", "usage", "cleanup", "files", "folder"},
+		},
+		{
+			TabID:       int(TabHTTP),
+			Title:       "HTTP Client",
+			Category:    "Net & DB",
+			Description: "API request runner with latency waterfall and JSON viewer",
+			Keywords:    []string{"http", "api", "curl", "postman", "rest", "json", "trace", "waterfall"},
+		},
+		{
+			TabID:       int(TabDNS),
+			Title:       "DNS Inspector",
+			Category:    "Net & DB",
+			Description: "DNS record lookup and nameserver tester (dig)",
+			Keywords:    []string{"dns", "dig", "records", "nameserver", "lookup", "mx", "cname", "txt", "ns"},
+		},
+		{
+			TabID:       int(TabTerminal),
+			Title:       "Terminal (PTY)",
+			Category:    "Tools",
+			Description: "Integrated interactive bash shell",
+			Keywords:    []string{"terminal", "bash", "shell", "pty", "console", "cmd"},
+		},
+	}
 }
 
 func NewModel() Model {
@@ -190,10 +371,14 @@ func NewModel() Model {
 		}
 	}
 
+	paletteItems := GetAllCommandPaletteItems()
+
 	return Model{
 		ActiveWorkspace: WorkspaceSystem,
-		ActiveTab:       TabMonitor,
+		ActiveTab:       TabDashboard,
 		LastActiveTab:   lastTabs,
+		CommandPalette:  commandpalette.New(paletteItems),
+		DashboardView:   dashboard.New(),
 		MonitorView:     monitor.New(),
 		ContainersView:  containers.New(),
 		ServicesView:    services.New(),
@@ -298,6 +483,17 @@ func (m *Model) PrevSubTab() {
 	if len(tabs) > 0 {
 		m.ActiveTab = tabs[0]
 		m.LastActiveTab[m.ActiveWorkspace] = m.ActiveTab
+	}
+}
+
+// hasInternalTabHandling returns true if the current view has multiple internal input fields or panes
+// that use Tab / Shift+Tab to switch focus within the view.
+func (m Model) hasInternalTabHandling() bool {
+	switch m.ActiveTab {
+	case TabDatabase, TabCertbot, TabEnv, TabHTTP, TabDNS, TabAutoNginx, TabGit, TabWorkers, TabSSH, TabKnife:
+		return true
+	default:
+		return false
 	}
 }
 

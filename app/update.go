@@ -8,6 +8,7 @@ import (
 	"dok-ops/views/certbot"
 	"dok-ops/views/ci"
 	"dok-ops/views/containers"
+	"dok-ops/views/dashboard"
 	"dok-ops/views/database"
 	"dok-ops/views/deploy"
 	"dok-ops/views/disk"
@@ -36,13 +37,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 
-		// Subview content height: window height minus header (2) and footer (2)
+		// Subview content height: window height minus single-row header (3) and footer (3)
 		subViewMsg := tea.WindowSizeMsg{
 			Width:  msg.Width,
-			Height: msg.Height - 4,
+			Height: msg.Height - 6,
 		}
 
 		var cmd tea.Cmd
+		m.DashboardView, cmd = m.DashboardView.Update(subViewMsg)
+		cmds = append(cmds, cmd)
+
 		m.MonitorView, cmd = m.MonitorView.Update(subViewMsg)
 		cmds = append(cmds, cmd)
 
@@ -122,6 +126,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case QuickStatsMsg:
 		m.QuickStats = msg
+		m.DashboardView.SetHostInfo(dashboard.HostInfo{
+			Hostname: msg.Hostname,
+			OS:       msg.OS,
+			Uptime:   msg.Uptime,
+			Load1:    msg.Load1,
+			Load5:    msg.Load5,
+			Load15:   msg.Load15,
+		})
 
 	// View-specific async messages routing
 	case monitor.StatsMsg, monitor.TickMsg:
@@ -240,6 +252,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// If command palette is open, intercept keystrokes
+		if m.CommandPalette.IsOpen() {
+			selectedTab, selected, closed := m.CommandPalette.Update(msg)
+			if selected {
+				m.SetTab(Tab(selectedTab))
+				return m, nil
+			}
+			if closed {
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// Global Command Palette shortcut: Ctrl+K or / (when not typing in terminal or inputs)
+		if msg.String() == "ctrl+k" || (msg.String() == "/" && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && (m.ActiveTab != TabTerminal || !m.TerminalView.IsFocused())) {
+			m.CommandPalette.Open()
+			m.TerminalView.SetFocus(false)
+			return m, nil
+		}
+
 		// F1-F12 always jump directly to tab even if PTY is captured
 		switch msg.String() {
 		case "f1":
@@ -308,10 +340,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.TerminalView.Close()
 			return m, tea.Quit
 		case "q":
-			// Allow 'q' to quit from Monitor / Bandwidth tabs
-			if m.ActiveTab == TabMonitor || m.ActiveTab == TabBandwidth {
+			// Allow 'q' to quit from Dashboard / Monitor / Bandwidth tabs
+			if m.ActiveTab == TabDashboard || m.ActiveTab == TabMonitor || m.ActiveTab == TabBandwidth {
 				m.TerminalView.Close()
 				return m, tea.Quit
+			}
+		case "esc":
+			if m.ActiveTab != TabDashboard && (m.ActiveTab != TabTerminal || !m.TerminalView.IsFocused()) {
+				m.ActiveTab = TabDashboard
+				return m, nil
 			}
 
 		// Workspace Navigation (1 through 5)
@@ -348,85 +385,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		// Sub-tab cycling within active workspace
+		// Tool cycling: Tab is solely for switching to the next tool across all workspaces
 		case "tab":
-			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
-				m.NextSubTab()
+			if m.ActiveTab == TabDashboard {
+				m.SetWorkspace(WorkspaceSystem)
 				return m, nil
 			}
-		case "shift+tab":
-			if m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabGit && m.ActiveTab != TabSSH && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot && m.ActiveTab != TabAutoNginx && m.ActiveTab != TabWorkers {
-				m.PrevSubTab()
-				return m, nil
-			}
-
-		// Direct module shortcut letters
-		case "K", "k":
-			if m.ActiveTab == TabKnife || (m.ActiveTab != TabMonitor && m.ActiveTab != TabPorts && m.ActiveTab != TabServices && m.ActiveTab != TabSSH && m.ActiveTab != TabDisk && m.ActiveTab != TabDeploy && m.ActiveTab != TabAutoNginx) {
-				m.SetTab(TabKnife)
-				return m, nil
-			}
-		case "L", "l":
-			if m.ActiveTab != TabContainers && m.ActiveTab != TabServices && m.ActiveTab != TabPorts && m.ActiveTab != TabWorkers && m.ActiveTab != TabDisk && m.ActiveTab != TabScanner {
-				m.SetTab(TabSSL)
-				return m, nil
-			}
-		case "B", "b":
-			if m.ActiveTab != TabDeploy && m.ActiveTab != TabKnife {
-				m.SetTab(TabDatabase)
-				return m, nil
-			}
-		case "W", "w":
-			m.SetTab(TabBandwidth)
+			m.NextSubTab()
 			return m, nil
-		case "A", "a":
-			if m.ActiveTab != TabKnife && m.ActiveTab != TabCertbot {
-				m.SetTab(TabScanner)
+
+		// Focus switching / Prev tool: Shift+Tab switches focus inside multi-input/multi-pane views,
+		// or goes to the previous tool in single-pane views.
+		case "shift+tab":
+			if m.ActiveTab == TabDashboard {
+				m.SetWorkspace(WorkspaceNetDB)
 				return m, nil
 			}
-		case "G", "g":
-			if m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabAutoNginx {
-				m.SetTab(TabGit)
-				return m, nil
-			}
-		case "C", "c":
-			if m.ActiveTab != TabMonitor && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabEnv && m.ActiveTab != TabPHPFPM {
-				m.SetTab(TabCI)
-				return m, nil
-			}
-		case "S", "s":
-			if m.ActiveTab != TabContainers && m.ActiveTab != TabServices && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabGit && m.ActiveTab != TabEnv && m.ActiveTab != TabAutoNginx {
-				m.SetTab(TabSSH)
-				return m, nil
-			}
-		case "E", "e":
-			if m.ActiveTab != TabNginx && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabGit {
-				m.SetTab(TabEnv)
-				return m, nil
-			}
-		case "O", "o":
-			if m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv {
-				m.SetTab(TabTimers)
-				return m, nil
-			}
-		case "D", "d":
-			if m.ActiveTab != TabContainers && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabGit && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabDeploy && m.ActiveTab != TabCertbot {
-				m.SetTab(TabDisk)
-				return m, nil
-			}
-		case "H", "h":
-			if m.ActiveTab != TabPorts && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabScanner {
-				m.SetTab(TabHTTP)
-				return m, nil
-			}
-		case "N", "n":
-			if m.ActiveTab != TabMonitor && m.ActiveTab != TabDisk && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabDatabase && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabCI && m.ActiveTab != TabEnv {
-				m.SetTab(TabDNS)
-				return m, nil
-			}
-		case "T", "t":
-			if m.ActiveTab != TabNginx && m.ActiveTab != TabPorts && m.ActiveTab != TabHTTP && m.ActiveTab != TabDNS && m.ActiveTab != TabKnife && m.ActiveTab != TabSSL && m.ActiveTab != TabDatabase && m.ActiveTab != TabCI && m.ActiveTab != TabEnv && m.ActiveTab != TabCertbot {
-				m.SetTab(TabTerminal)
+			if !m.hasInternalTabHandling() {
+				m.PrevSubTab()
 				return m, nil
 			}
 		case "i":
@@ -440,6 +416,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Route active tab updates
 	var cmd tea.Cmd
 	switch m.ActiveTab {
+	case TabDashboard:
+		m.DashboardView, cmd = m.DashboardView.Update(msg)
 	case TabMonitor:
 		m.MonitorView, cmd = m.MonitorView.Update(msg)
 	case TabContainers:
